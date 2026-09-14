@@ -1,0 +1,18 @@
+1. Đầu tiên hãy di chuyển tới thư mục bạn muốn chứa dự án, 
+gõ lệnh tạo môi trường ảo
+python -m venv venv
+
+2. Kích hoạt môi trường ảo:
+venv\Scripts\activate
+Bạn sẽ thấy chữ (venv) hiện lên ở đầu dòng lệnh, 
+chứng tỏ đã kích hoạt thành công
+
+3. Cấu trúc thư mục sẽ như sau:
+deepvarx-coffee-price-forecasting là thư mục chính
+bên trong bao gồm: venv/, requirements.txt, home.py, pages/,...
+
+4. Cài đặt thư viện
+pip install -r requirements.txt
+
+5. Sau khi cài đặt xong các thư viện cần thiết thì chạy 
+streamlit run app.py
