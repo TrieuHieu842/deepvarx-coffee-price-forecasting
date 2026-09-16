@@ -2,6 +2,9 @@
 gõ lệnh tạo môi trường ảo
 python -m venv venv
 
+Cài bằng python 3.10
+py -3.10 -m venv venv
+
 2. Kích hoạt môi trường ảo:
 venv\Scripts\activate
 Bạn sẽ thấy chữ (venv) hiện lên ở đầu dòng lệnh, 
@@ -15,4 +18,7 @@ bên trong bao gồm: venv/, requirements.txt, home.py, pages/,...
 pip install -r requirements.txt
 
 5. Sau khi cài đặt xong các thư viện cần thiết thì chạy 
-streamlit run app.py
+streamlit run Home.py
+
+6. Thoát môi trường ảo
+deactivate

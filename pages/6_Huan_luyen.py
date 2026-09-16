@@ -94,34 +94,146 @@ elif model_tab == "LSTM":
     with c3:
         lr = st.number_input("Learning rate", 0.00001, 1.0, 0.001, format="%.5f")
         batch_size = st.number_input("Batch size", 1, 512, 32)
+    dropout = st.slider("Dropout", 0.0, 0.6, 0.2, 0.05)
 
     if st.button("▶️ Huấn luyện LSTM", type="primary"):
-        progress = st.progress(0)
-        # TODO: HOOK — thay bằng vòng lặp huấn luyện PyTorch thật, ví dụ:
-        # model = LSTMModel(input_size=len(endo)+len(exo), hidden_size=hidden_size, num_layers=n_layers)
-        # for epoch in range(epochs):
-        #     ... train step ...
-        #     progress.progress((epoch+1)/epochs)
-        train_losses, val_losses = [], []
-        for e in range(min(epochs, 50)):
-            train_losses.append(1.0 / (e + 1) + np.random.rand() * 0.05)
-            val_losses.append(1.1 / (e + 1) + np.random.rand() * 0.07)
-            progress.progress((e + 1) / min(epochs, 50))
-            time.sleep(0.01)
+        import torch
+        import torch.nn as nn
+        from torch.utils.data import DataLoader
+        from utils.lstm_model import LSTMForecaster, make_windows, TimeSeriesDataset
+        from utils.preprocessing import inverse_transform
 
-        n_test = len(st.session_state["test_df"])
-        dummy_actual = np.cumsum(np.random.randn(n_test)) + 100
-        dummy_pred = dummy_actual + np.random.randn(n_test) * 1.2
+        feature_cols = endo + exo          # toàn bộ biến đưa vào LSTM
+        target_cols = endo                  # dự báo (các) biến nội sinh
+        target_idx = [feature_cols.index(c) for c in target_cols]
+
+        # train_df/val_df/test_df đã được chuẩn hóa (fit-on-train-only) ở trang
+        # "✂️ Chia dữ liệu & chọn biến" — không chuẩn hóa lại ở đây.
+        train_arr = st.session_state["train_df"][feature_cols].dropna().values
+        val_arr = st.session_state["val_df"][feature_cols].dropna().values
+        test_arr = st.session_state["test_df"][feature_cols].dropna().values
+
+        X_train, y_train = make_windows(train_arr, target_idx, int(seq_len), horizon=1)
+        X_val, y_val = make_windows(val_arr, target_idx, int(seq_len), horizon=1)
+        X_test, y_test = make_windows(test_arr, target_idx, int(seq_len), horizon=1)
+
+        if len(X_train) == 0 or len(X_test) == 0:
+            st.error(
+                f"Không đủ dữ liệu để tạo sliding window với seq_len={seq_len}. "
+                f"Giảm 'Độ dài chuỗi đầu vào' hoặc quay lại trang trước tăng tỷ lệ Train/Test."
+            )
+            st.stop()
+
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        train_loader = DataLoader(TimeSeriesDataset(X_train, y_train),
+                                    batch_size=int(batch_size), shuffle=True)
+        val_loader = (DataLoader(TimeSeriesDataset(X_val, y_val), batch_size=int(batch_size), shuffle=False)
+                       if len(X_val) else None)
+        test_loader = DataLoader(TimeSeriesDataset(X_test, y_test),
+                                   batch_size=int(batch_size), shuffle=False)
+
+        model = LSTMForecaster(
+            n_features=len(feature_cols), n_targets=len(target_cols), horizon=1,
+            hidden_size=int(hidden_size), num_layers=int(n_layers), dropout=float(dropout),
+        ).to(device)
+        criterion = nn.MSELoss()
+        optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5)
+
+        progress = st.progress(0)
+        status = st.empty()
+        train_losses, val_losses = [], []
+
+        for epoch in range(int(epochs)):
+            model.train()
+            running = 0.0
+            for xb, yb in train_loader:
+                xb, yb = xb.to(device), yb.to(device)
+                optimizer.zero_grad()
+                pred = model(xb)
+                loss = criterion(pred, yb)
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
+                running += loss.item() * xb.size(0)
+            train_loss = running / len(train_loader.dataset)
+            train_losses.append(train_loss)
+
+            if val_loader is not None and len(val_loader.dataset):
+                model.eval()
+                v_running = 0.0
+                with torch.no_grad():
+                    for xb, yb in val_loader:
+                        xb, yb = xb.to(device), yb.to(device)
+                        v_running += criterion(model(xb), yb).item() * xb.size(0)
+                val_loss = v_running / len(val_loader.dataset)
+            else:
+                val_loss = float("nan")
+            val_losses.append(val_loss)
+
+            progress.progress((epoch + 1) / int(epochs))
+            if epoch % 5 == 0 or epoch == int(epochs) - 1:
+                status.text(f"Epoch {epoch + 1}/{int(epochs)} — "
+                            f"train_loss={train_loss:.5f} | val_loss={val_loss:.5f}")
+
+        # ------------------------------------------------------------- Đánh giá trên tập test
+        model.eval()
+        all_preds, all_actuals = [], []
+        with torch.no_grad():
+            for xb, yb in test_loader:
+                xb = xb.to(device)
+                all_preds.append(model(xb).cpu().numpy())
+                all_actuals.append(yb.numpy())
+        preds = np.concatenate(all_preds, axis=0)      # (N, 1, n_targets) — vẫn ở thang chuẩn hóa
+        actuals = np.concatenate(all_actuals, axis=0)
+
+        # Bảng kết quả/biểu đồ ở trang "Kết quả & So sánh" hiện chỉ nhận 1 chuỗi actual/predicted,
+        # nên dùng biến nội sinh ĐẦU TIÊN làm đại diện, đưa về thang đo gốc bằng scaler đã fit
+        # ở trang "Chia dữ liệu & chọn biến" (st.session_state["fitted_scalers"]).
+        main_var = target_cols[0]
+        fitted = st.session_state.get("fitted_scalers", {}).get(main_var)
+        pred_main = preds[:, 0, 0]
+        actual_main = actuals[:, 0, 0]
+        if fitted is not None:
+            pred_main = inverse_transform(pred_main, fitted["method"], fitted["scaler"])
+            actual_main = inverse_transform(actual_main, fitted["method"], fitted["scaler"])
+            st.write("===== DEBUG LSTM =====")
+            st.write("Target:", main_var)
+            st.write("Scaler method:", fitted["method"] if fitted else None)
+            st.write("Actual min:", float(np.min(actual_main)))
+            st.write("Actual max:", float(np.max(actual_main)))
+            st.write("Actual mean:", float(np.mean(actual_main)))
+            st.write("Pred min:", float(np.min(pred_main)))
+            st.write("Pred max:", float(np.max(pred_main)))
+            st.write("Pred mean:", float(np.mean(pred_main)))
+        rmse = float(np.sqrt(np.mean((actual_main - pred_main) ** 2)))
+        mae = float(np.mean(np.abs(actual_main - pred_main)))
+        denom = np.where(actual_main == 0, 1e-8, actual_main)
+        mape = float(np.mean(np.abs((actual_main - pred_main) / denom)) * 100)
 
         st.session_state["results"]["LSTM"] = {
-            "metrics": {"RMSE": float(np.sqrt(np.mean((dummy_actual-dummy_pred)**2))),
-                        "MAE": float(np.mean(np.abs(dummy_actual-dummy_pred))),
-                        "MAPE": float(np.mean(np.abs((dummy_actual-dummy_pred)/dummy_actual))*100)},
-            "actual": dummy_actual.tolist(),
-            "predicted": dummy_pred.tolist(),
+            "metrics": {"RMSE": rmse, "MAE": mae, "MAPE": mape},
+            "actual": actual_main.tolist(),
+            "predicted": pred_main.tolist(),
             "loss_curve": {"train": train_losses, "val": val_losses},
         }
-        st.success("Đã huấn luyện LSTM (mô phỏng) — xem kết quả ở trang 📈 Kết quả & So sánh.")
+        st.success(
+            f"Đã huấn luyện LSTM xong ({len(train_losses)} epoch) trên {len(feature_cols)} biến đầu vào "
+            f"— chỉ số/biểu đồ ứng với biến **{main_var}**. Xem chi tiết ở trang 📈 Kết quả & So sánh."
+        )
+        if len(target_cols) > 1:
+            st.caption(
+                f"Lưu ý: mô hình dự báo đồng thời {target_cols}, nhưng bảng kết quả hiện chỉ hiển thị "
+                f"biến đầu tiên ({main_var}). Muốn xem riêng từng biến, lưu thêm dữ liệu từng biến vào "
+                f"`results['LSTM']['by_variable']` (tương tự khung `by_province` ở trang Kết quả)."
+            )
+        if fitted is not None and fitted.get("method") == "log_diff":
+            st.caption(
+                "⚠️ Biến này dùng 'Log-transform + Sai phân bậc 1' — `inverse_transform` cho log_diff "
+                "trong `utils/preprocessing.py` mới trả về phần dư sai phân (chưa cộng dồn lại thang gốc), "
+                "nên RMSE/MAE/MAPE ở trên vẫn đang ở thang sai phân, không phải giá gốc. Cần cộng dồn "
+                "(cumsum từ `last_log_value`) rồi `exp()` nếu muốn đưa về giá thực."
+            )
 
 # ---------------------------------------------------------------------------
 elif model_tab == "DeepVARX":

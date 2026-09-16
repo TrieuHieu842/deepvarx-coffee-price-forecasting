@@ -34,16 +34,16 @@ phân tích khám phá, đến huấn luyện và so sánh 4 mô hình dự báo
 LSTM, DeepVARX** — trên dữ liệu bảng (panel) giá cà phê xuất khẩu 12 tỉnh Việt Nam.
 
 ### Điều hướng (sidebar bên trái)
-1. **📂 Tải dữ liệu** — upload file, xem tổng quan, mô tả thống kê
-2. **🧹 Tiền xử lý dữ liệu** — xử lý missing/outlier, chọn phương pháp chuẩn hóa
-3. **📊 Phân tích khám phá (EDA)** — tương quan, VIF, ADF, ACF/PACF, tương quan chéo tỉnh
-4. **📖 Giới thiệu mô hình** — lý thuyết VAR / VARX / LSTM / DeepVARX
-5. **✂️ Chia dữ liệu & chọn biến** — biến nội sinh/ngoại sinh, train/val/test, độ trễ
-6. **🎯 Huấn luyện mô hình** — cấu hình & huấn luyện (khung giao diện, chờ nối code)
-7. **📈 Kết quả & So sánh** — RMSE/MAE/MAPE, biểu đồ dự báo, ablation, so sánh theo tỉnh
+1. **Tải dữ liệu** — upload file, xem tổng quan, mô tả thống kê
+2. **Tiền xử lý dữ liệu** — xử lý missing/outlier, chọn phương pháp chuẩn hóa
+3. **Phân tích khám phá (EDA)** — tương quan, VIF, ADF, ACF/PACF, tương quan chéo tỉnh
+4. **Giới thiệu mô hình** — lý thuyết VAR / VARX / LSTM / DeepVARX
+5. **Chia dữ liệu & chọn biến** — biến nội sinh/ngoại sinh, train/val/test, độ trễ
+6. **Huấn luyện mô hình** — cấu hình & huấn luyện (khung giao diện, chờ nối code)
+7. **Kết quả & So sánh** — RMSE/MAE/MAPE, biểu đồ dự báo, ablation, so sánh theo tỉnh
 
 ---
-👉 Bắt đầu từ trang **"📂 Tải dữ liệu"** ở sidebar bên trái.
+Bắt đầu từ trang **"Tải dữ liệu"** ở sidebar bên trái.
 """)
 
 with st.sidebar:
