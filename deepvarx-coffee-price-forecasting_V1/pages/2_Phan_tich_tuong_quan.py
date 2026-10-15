@@ -1,351 +1,487 @@
-import streamlit as st
-import pandas as pd
+# -*- coding: utf-8 -*-
+"""
+DeepVARX — Trang 3: Phân tích tương quan & quan hệ dự báo (sàng lọc biến X)
+
+Đặt tại: pages/2_Phan_tich_tuong_quan.py  (chạy sau pages/1_Tai_du_lieu.py)
+Cần: streamlit, pandas, numpy, scipy, plotly
+
+LUỒNG
+    0. Nạp dữ liệu   -> lấy từ Trang 1 (session_state); không có thì upload / demo
+    1. Chọn cột      -> ngày, Y (giá), loại cà phê, các X, tham số
+    2. Chuẩn bị      -> gộp theo ngày, cắt TRAIN, lấy sai phân
+    3. Bốn phân tích -> Y–Y | X–X (+VIF) | CCF | Granger
+    4. Shortlist     -> biến X nên giữ, tải CSV, lưu cho trang sau
+
+CÁC PHƯƠNG PHÁP ĐÃ SÀNG LỌC
+    Giữ   : tương quan trên SAI PHÂN (tránh hồi quy giả), VIF, CCF có tiền trắng hóa,
+            Granger (Wald F với sai số chuẩn bền HC1)
+    Sửa   : ngưỡng CCF hiệu chỉnh theo số lag (nếu không, ~5% lag vượt ngưỡng do ngẫu nhiên,
+            gần như biến nào cũng "có lag"); Granger dùng sai số bền vì sai phân giá có
+            phương sai thay đổi; lag Granger dựng trên lưới thời gian đầy đủ, không dồn dòng
+    Bỏ   : không dùng ADF/KPSS ở đây (thuộc Trang 5), không kiểm định nhân quả thật sự
+"""
+import re
+
 import numpy as np
-import plotly.express as px
+import pandas as pd
 import plotly.graph_objects as go
+import streamlit as st
+from scipy import stats
 
-APP_HEADER = "☕ DeepVARX — Hệ thống dự báo giá cà phê xuất khẩu Việt Nam"
+# ============================================================
+# CONFIG (đồng bộ với Trang 1)
+# ============================================================
+APP_HEADER = "☕ DeepVARX — Hệ thống dự báo giá thu mua cà phê Việt Nam"
+PROVINCE_COL = "province"
+COFFEE_TYPE_COL = "coffee_type"
+ALL_TYPES = "(Tất cả loại — lấy trung bình)"
 
-# Cột meta (không dùng làm biến phân tích)
-META_COLS = {"date", "province", "lat", "lon", "coffee_price_vnd_kg_raw"}
-TARGET_COL = "coffee_price_vnd_kg"
+# Tham số ứng dụng (không phải chuẩn học thuật)
+MIN_RHO_Y = 0.5          # ρ tối thiểu giữa các tỉnh để dùng 1 chuỗi đại diện
+HIGH_CORR_X = 0.8        # |ρ| coi là X trùng thông tin
+VIF_WARN, VIF_STRONG = 5.0, 10.0
+ZERO_DIFF_FLAG = 50.0    # % sai phân = 0 để cảnh báo X "đứng yên"
+MIN_OBS = 40             # số quan sát tối thiểu cho CCF
 
 st.set_page_config(page_title="Phân tích tương quan", page_icon="☕", layout="wide")
 
+
+def _streamlit_version():
+    return tuple(int(re.sub(r"\D", "", p) or 0) for p in st.__version__.split(".")[:2])
+
+
+STRETCH = {"width": "stretch"} if _streamlit_version() >= (1, 50) else {"use_container_width": True}
+
+
+# ============================================================
+# HÀM TIỆN ÍCH
+# ============================================================
+def demo_data():
+    """Demo: 3 tỉnh × 2 loại; rain dẫn trước giá 3 kỳ, oil trùng thông tin với usd."""
+    rng = np.random.default_rng(0)
+    n = 600
+    dates = pd.date_range("2022-01-03", periods=n, freq="B")
+    rain_shock, usd_shock = rng.normal(size=n), rng.normal(size=n)
+    rain, usd = np.cumsum(rain_shock), np.cumsum(usd_shock)
+    oil = np.cumsum(0.9 * usd_shock + rng.normal(scale=0.3, size=n))
+    noise = np.cumsum(rng.normal(size=n))            # biến không liên quan
+    common = np.cumsum(0.8 * np.roll(rain_shock, 3) + rng.normal(size=n))
+    rows = []
+    for ctype, base in [("Robusta", 50000), ("Arabica", 90000)]:
+        for prov in ["Dak Lak", "Lam Dong", "Gia Lai"]:
+            price = base + 100 * (common + np.cumsum(rng.normal(scale=0.5, size=n)))
+            rows.append(pd.DataFrame({"date": dates, PROVINCE_COL: prov, COFFEE_TYPE_COL: ctype,
+                                      "price": price, "rain": rain, "usd": usd, "oil": oil, "noise": noise}))
+    return pd.concat(rows, ignore_index=True)
+
+
+def corr_heatmap(mat, title):
+    fig = go.Figure(go.Heatmap(
+        z=mat.values, x=list(mat.columns), y=list(mat.index),
+        colorscale="RdBu", zmid=0, zmin=-1, zmax=1,
+        text=np.round(mat.values, 2), texttemplate="%{text}"))
+    fig.update_layout(title=title, height=max(300, 45 * len(mat) + 110), margin=dict(t=45, b=10))
+    fig.update_yaxes(autorange="reversed")
+    return fig
+
+
+def vif_table(X):
+    """VIF_j = phần tử đường chéo của nghịch đảo ma trận tương quan."""
+    Xc = X.dropna()
+    if len(Xc) < X.shape[1] + 5:
+        return pd.DataFrame({"Biến X": X.columns, "VIF": np.nan})
+    vif = np.diag(np.linalg.pinv(Xc.corr().values))
+    return pd.DataFrame({"Biến X": X.columns, "VIF": vif}).sort_values("VIF", ascending=False)
+
+
+def fit_ar_filter(x, max_p=10):
+    """Chọn bậc AR theo AIC, trả hệ số phi (bộ lọc tiền trắng hóa)."""
+    x = np.asarray(x, float) - np.mean(x)
+    best_phi, best_aic = np.array([0.0]), np.inf
+    for p in range(1, max_p + 1):
+        A = np.column_stack([x[p - i - 1:len(x) - i - 1] for i in range(p)])
+        b = x[p:]
+        phi = np.linalg.lstsq(A, b, rcond=None)[0]
+        s2 = max(np.mean((b - A @ phi) ** 2), 1e-12)
+        aic = np.log(s2) + 2 * p / len(b)
+        if aic < best_aic:
+            best_phi, best_aic = phi, aic
+    return best_phi
+
+
+def apply_ar_filter(x, phi):
+    x = np.asarray(x, float) - np.mean(x)
+    p = len(phi)
+    return x[p:] - sum(phi[i] * x[p - i - 1:len(x) - i - 1] for i in range(p))
+
+
+def ccf_table(y, x, max_lag, alpha):
+    """
+    CCF(k) = Corr(Y_t, X_{t-k}); k > 0: X dẫn trước Y.
+    X và Y lọc bằng CÙNG bộ lọc AR (khớp trên X) -> ngưỡng ±z/√n hợp lệ.
+    Hai ngưỡng: từng lag (α) và hiệu chỉnh Bonferroni theo max_lag lag.
+    """
+    d = pd.concat([y.rename("y"), x.rename("x")], axis=1).dropna()
+    if len(d) < MIN_OBS + max_lag:
+        return None, None, None, len(d)
+    phi = fit_ar_filter(d["x"].values)
+    yf, xf = apply_ar_filter(d["y"].values, phi), apply_ar_filter(d["x"].values, phi)
+    n = len(yf)
+    if np.std(yf) == 0 or np.std(xf) == 0:
+        return None, None, None, n
+    r = [np.corrcoef(yf[k:], xf[:n - k])[0, 1] for k in range(max_lag + 1)]
+    band = stats.norm.ppf(1 - alpha / 2) / np.sqrt(n)
+    band_adj = stats.norm.ppf(1 - alpha / (2 * max_lag)) / np.sqrt(n)
+    out = pd.DataFrame({"Lag k": range(max_lag + 1), "CCF": r})
+    out["Vượt ngưỡng từng lag"] = out["CCF"].abs() > band
+    out["Vượt ngưỡng hiệu chỉnh"] = out["CCF"].abs() > band_adj
+    return out, band, band_adj, n
+
+
+def granger_test(y, x, lag):
+    """
+    Wald F cho H0: toàn bộ hệ số quá khứ của X = 0 trong hồi quy Y_t ~ Y_{t-1..t-lag} + X_{t-1..t-lag}.
+    Sai số chuẩn bền HC1 (sai phân giá có phương sai thay đổi theo cụm).
+    Lag dựng trên chuỗi đầy đủ rồi mới bỏ hàng thiếu -> không làm lệch lag khi có NaN.
+    """
+    d = pd.concat([y.rename("y"), x.rename("x")], axis=1)
+    yv, xv, n = d["y"].values, d["x"].values, len(d)
+    target = yv[lag:]
+    y_lags = np.column_stack([yv[lag - i - 1:n - i - 1] for i in range(lag)])
+    x_lags = np.column_stack([xv[lag - i - 1:n - i - 1] for i in range(lag)])
+    Z = np.hstack([np.ones((len(target), 1)), y_lags, x_lags])
+    ok = np.isfinite(target) & np.isfinite(Z).all(axis=1)
+    target, Z = target[ok], Z[ok]
+    m, k = Z.shape
+    if m < 5 * k or np.linalg.matrix_rank(Z) < k:
+        return np.nan, np.nan, m
+    beta = np.linalg.lstsq(Z, target, rcond=None)[0]
+    e = target - Z @ beta
+    bread = np.linalg.inv(Z.T @ Z)
+    Ze = Z * e[:, None]
+    V = bread @ (Ze.T @ Ze) @ bread * m / (m - k)
+    sl = slice(1 + lag, 1 + 2 * lag)
+    b, Vb = beta[sl], V[sl, sl]
+    F = float(b @ np.linalg.pinv(Vb) @ b) / lag
+    return F, float(stats.f.sf(F, lag, m - k)), m
+
+
+# ============================================================
+# SIDEBAR + HEADER
+# ============================================================
 with st.sidebar:
     st.markdown("## ☕ DeepVARX")
     st.caption("Dự báo giá cà phê xuất khẩu Việt Nam")
     st.divider()
-    proc = st.session_state.get("processed_data")
-    raw = st.session_state.get("raw_data")
-    df_check = proc if proc is not None else raw
-    if df_check is not None:
-        st.success(f"Dữ liệu: {df_check.shape[0]:,} × {df_check.shape[1]}")
-    if st.session_state.get("endogenous_vars"):
-        st.info("Endog: "+ ", ".join(st.session_state["endogenous_vars"][:3]))
-    if st.session_state.get("exogenous_vars"):
-        st.info(f"Exog: {len(st.session_state['exogenous_vars'])} biến")
+    if st.session_state.get("raw_data") is not None:
+        _d = st.session_state["raw_data"]
+        st.success(f"Dữ liệu: {_d.shape[0]:,} × {_d.shape[1]}")
+    if st.button("← Về Trang 1", key="sb_back", **STRETCH):
+        st.switch_page("pages/1_Tai_du_lieu.py")
 
 st.caption(APP_HEADER)
-st.title("Trang 2 — Phân tích tương quan & Lựa chọn biến")
+st.title("Trang 3 — Phân tích tương quan & sàng lọc biến X")
+st.markdown(
+    """
+Trang này trả lời 4 câu hỏi rồi gom thành danh sách biến X nên giữ:
 
-# ── Kiểm tra dữ liệu ──────────────────────────────────────────────────────
-proc = st.session_state.get("processed_data")
-raw = st.session_state.get("raw_data")
-df = proc if proc is not None else raw
+1. Các tỉnh có đủ giống nhau để dùng **một chuỗi giá đại diện** không? (Y–Y)
+2. Những biến X nào **trùng thông tin** nhau? (X–X, VIF)
+3. Biến X **dẫn trước giá** bao nhiêu kỳ? (CCF)
+4. Quá khứ của X có **giúp dự báo** giá không? (Granger)
 
-if df is None:
-    st.warning("Chưa có dữ liệu. Vui lòng tải dữ liệu ở Trang 1 trước.")
-    if st.button("Đi đến Trang 1"):
-        st.switch_page("pages/1_Tai_du_lieu.py")
-    st.stop()
-
-if proc is None:
-    st.warning("Dữ liệu chưa được tiền xử lý. Kết quả phân tích có thể bị ảnh hưởng bởi missing/outlier.")
-
-# Chọn cột số (loại bỏ meta)
-num_all = [c for c in df.select_dtypes(include="number").columns if c not in META_COLS]
-# Biến ứng viên (loại bỏ target)
-candidate_cols = [c for c in num_all if c != TARGET_COL]
-
-st.caption(f"Dữ liệu: **{df.shape[0]:,}** dòng | Biến số: **{len(num_all)}** | Target: **{TARGET_COL}** | Biến ứng viên: **{len(candidate_cols)}**")
-
-if TARGET_COL not in df.columns:
-    st.error(f"Không tìm thấy cột target `{TARGET_COL}`trong dữ liệu.")
-    st.stop()
-
-numeric_df = df[num_all].dropna()
-st.divider()
-
-# ═══════════════════════════════════════════════════════════════════════════
-# 4 TAB PHÂN TÍCH
-# ═══════════════════════════════════════════════════════════════════════════
-tab1, tab2, tab3, tab4 = st.tabs([
-    "Pearson",
-    "Spearman",
-    "VIF",
-    "CCF",
-])
-
-# TAB 1 — PEARSON ────────────────────────────────────────────────────────────
-with tab1:
-    st.subheader("Tương quan Pearson")
-    st.markdown("Đo mức độ **tuyến tính** giữa 2 biến liên tục. Giá trị ∈ [−1, 1]. |r| > 0.7: mạnh · 0.4–0.7: trung bình · < 0.4: yếu.")
-
-    selected_p = st.multiselect("Chọn cột phân tích Pearson", num_all,
-                                default=num_all[:min(12, len(num_all))], key="p_cols")
-    if len(selected_p) >= 2:
-        corr_p = numeric_df[selected_p].corr(method="pearson")
-        fig = go.Figure(go.Heatmap(
-            z=corr_p.values, x=corr_p.columns, y=corr_p.index,
-            colorscale="RdBu", zmid=0, zmin=-1, zmax=1,
-            text=np.round(corr_p.values, 2), texttemplate="%{text}",
-            colorbar=dict(title="r"),
-        ))
-        fig.update_layout(title="Ma trận Pearson", height=max(420, 55*len(selected_p)),
-                          margin=dict(l=10, r=10, t=45, b=10))
-        st.plotly_chart(fig, use_container_width=True)
-
-        if TARGET_COL in selected_p:
-            st.subheader(f"Tương quan với {TARGET_COL}")
-            corr_target = corr_p[TARGET_COL].drop(TARGET_COL).sort_values(key=abs, ascending=False)
-            fig2 = px.bar(corr_target.reset_index(), x="index", y=TARGET_COL,
-                          title=f"Pearson r với {TARGET_COL}",
-                          color=TARGET_COL, color_continuous_scale="RdBu", range_color=[-1,1])
-            fig2.add_hline(y=0.4, line_dash="dash", line_color="green", annotation_text="0.4")
-            fig2.add_hline(y=-0.4, line_dash="dash", line_color="green")
-            fig2.update_layout(height=380, xaxis_title="Biến", yaxis_title="r", showlegend=False)
-            st.plotly_chart(fig2, use_container_width=True)
-            st.session_state["_pearson_target"] = corr_target.to_dict()
-    else:
-        st.info("Chọn ít nhất 2 cột.")
-
-# TAB 2 — SPEARMAN ────────────────────────────────────────────────────────────
-with tab2:
-    st.subheader("Tương quan Spearman")
-    st.markdown("Đo tương quan **đơn điệu** (rank-based). Phù hợp khi dữ liệu không chuẩn hoặc có outlier. |ρ| > 0.7: mạnh.")
-
-    selected_s = st.multiselect("Chọn cột phân tích Spearman", num_all,
-                                default=num_all[:min(12, len(num_all))], key="s_cols")
-    if len(selected_s) >= 2:
-        corr_s = numeric_df[selected_s].corr(method="spearman")
-        fig = go.Figure(go.Heatmap(
-            z=corr_s.values, x=corr_s.columns, y=corr_s.index,
-            colorscale="RdBu", zmid=0, zmin=-1, zmax=1,
-            text=np.round(corr_s.values, 2), texttemplate="%{text}",
-            colorbar=dict(title="rho"),
-        ))
-        fig.update_layout(title="Ma trận Spearman", height=max(420, 55*len(selected_s)),
-                          margin=dict(l=10, r=10, t=45, b=10))
-        st.plotly_chart(fig, use_container_width=True)
-
-        if TARGET_COL in selected_s:
-            st.subheader(f"Tương quan Spearman với {TARGET_COL}")
-            corr_st = corr_s[TARGET_COL].drop(TARGET_COL).sort_values(key=abs, ascending=False)
-            fig2 = px.bar(corr_st.reset_index(), x="index", y=TARGET_COL,
-                          title=f"Spearman ρ với {TARGET_COL}",
-                          color=TARGET_COL, color_continuous_scale="RdBu", range_color=[-1,1])
-            fig2.add_hline(y=0.4, line_dash="dash", line_color="green")
-            fig2.add_hline(y=-0.4, line_dash="dash", line_color="green")
-            fig2.update_layout(height=380, xaxis_title="Biến", yaxis_title="rho", showlegend=False)
-            st.plotly_chart(fig2, use_container_width=True)
-            st.session_state["_spearman_target"] = corr_st.to_dict()
-    else:
-        st.info("Chọn ít nhất 2 cột.")
-
-# TAB 3 — VIF ────────────────────────────────────────────────────────────────
-with tab3:
-    st.subheader("VIF — Variance Inflation Factor")
-    st.markdown("**VIF** đo đa cộng tuyến. VIF=1: không đa cộng tuyến · VIF<5: chấp nhận · VIF≥5: · VIF≥10: nghiêm trọng")
-
-    selected_v = st.multiselect("Chọn biến tính VIF (nên loại bỏ target trước)",
-                                candidate_cols, default=candidate_cols[:min(12, len(candidate_cols))], key="v_cols")
-    if len(selected_v) >= 2:
-        try:
-            from statsmodels.stats.outliers_influence import variance_inflation_factor
-            Xv = numeric_df[selected_v].dropna()
-            X_const = np.column_stack([np.ones(len(Xv)), Xv.values])
-            vif_vals = [variance_inflation_factor(X_const, i+1) for i in range(len(selected_v))]
-            vif_df = pd.DataFrame({"Biến": selected_v, "VIF": np.round(vif_vals, 4)}).sort_values("VIF", ascending=False)
-
-            def _c(v):
-                if v >= 10: return "background-color:#fee2e2;color:#991b1b"
-                if v >= 5: return "background-color:#fef9c3;color:#92400e"
-                return "background-color:#dcfce7;color:#166534"
-            st.dataframe(vif_df.style.applymap(_c, subset=["VIF"]).format({"VIF":"{:.4f}"}),
-                         use_container_width=True, height=280)
-
-            fig = px.bar(vif_df.sort_values("VIF"), x="VIF", y="Biến", orientation="h",
-                         color="VIF", color_continuous_scale=["#22c55e","#eab308","#ef4444"],
-                         title="VIF theo biến")
-            fig.add_vline(x=5, line_dash="dash", line_color="#eab308", annotation_text="VIF=5")
-            fig.add_vline(x=10, line_dash="dash", line_color="#ef4444", annotation_text="VIF=10")
-            fig.update_layout(height=max(350, 32*len(selected_v)), showlegend=False)
-            st.plotly_chart(fig, use_container_width=True)
-
-            st.session_state["_vif_data"] = dict(zip(vif_df["Biến"], vif_df["VIF"]))
-            n_h = int((vif_df["VIF"] >= 10).sum())
-            n_m = int(((vif_df["VIF"] >= 5) & (vif_df["VIF"] < 10)).sum())
-            if n_h > 0: st.error(f"{n_h} biến VIF ≥ 10")
-            if n_m > 0: st.warning(f"{n_m} biến 5 ≤ VIF < 10")
-            if n_h == 0 and n_m == 0: st.success("Không có đa cộng tuyến nghiêm trọng (VIF < 5 tất cả)")
-        except ImportError:
-            st.error("Cần cài: pip install statsmodels")
-        except Exception as e:
-            st.error(f"Lỗi VIF: {e}")
-    else:
-        st.info("Chọn ít nhất 2 biến.")
-
-# TAB 4 — CCF ────────────────────────────────────────────────────────────────
-with tab4:
-    st.subheader("CCF — Cross-Correlation Function (Tương quan chéo)")
-    st.markdown("Đo tương quan giữa biến ngoại sinh và **coffee_price_vnd_kg** ở các độ trễ khác nhau. Phát hiện lag nhân quả.")
-
-    try:
-        from statsmodels.tsa.stattools import ccf as _ccf
-
-        c1, c2, c3 = st.columns(3)
-        x_c = c1.selectbox("Biến X (nguyên nhân)", candidate_cols, key="ccf_x")
-        n_lag = c3.slider("Số lag tối đa", 5, 60, 30, key="ccf_lags")
-
-        sx = numeric_df[x_c].values
-        sy = numeric_df[TARGET_COL].values
-        min_len = min(len(sx), len(sy))
-        ccf_v = _ccf(sx[:min_len], sy[:min_len], nlags=n_lag, alpha=None)
-        lags = np.arange(len(ccf_v))
-        conf = 1.96 / np.sqrt(min_len)
-
-        fig = go.Figure()
-        for lag, val in zip(lags, ccf_v):
-            clr = "#6366f1"if abs(val) > conf else "#94a3b8"
-            fig.add_trace(go.Scatter(x=[lag, lag], y=[0, val], mode="lines",
-                                     line=dict(color=clr, width=3), showlegend=False))
-        fig.add_trace(go.Scatter(x=lags, y=ccf_v, mode="markers",
-                                 marker=dict(color=["#6366f1"if abs(v)>conf else "#94a3b8"for v in ccf_v], size=7),
-                                 name="CCF"))
-        fig.add_hline(y=conf, line_dash="dash", line_color="#f59e0b", annotation_text=f"+{conf:.3f} 95%CI")
-        fig.add_hline(y=-conf, line_dash="dash", line_color="#f59e0b", annotation_text=f"-{conf:.3f} 95%CI")
-        fig.update_layout(title=f"CCF: {x_c} → {TARGET_COL}", xaxis_title="Lag", yaxis_title="CCF",
-                          height=400, margin=dict(l=10, r=10, t=50, b=10))
-        st.plotly_chart(fig, use_container_width=True)
-
-        sig = [(int(l), float(v)) for l, v in zip(lags, ccf_v) if abs(v) > conf]
-        if sig:
-            best = sig[np.argmax([abs(v) for _, v in sig])]
-            st.success(f"Lag có CCF mạnh nhất: **lag = {best[0]}** (CCF = {best[1]:.4f})")
-    except ImportError:
-        st.error("Cần cài: pip install statsmodels")
-    except Exception as e:
-        st.error(f"Lỗi CCF: {e}")
-
-# ═══════════════════════════════════════════════════════════════════════════
-# BẢNG TỔNG HỢP
-# ═══════════════════════════════════════════════════════════════════════════
-st.divider()
-st.header("Bảng tổng hợp chỉ số tương quan")
-st.markdown("Mỗi hàng là 1 biến ứng viên — so sánh Pearson, Spearman, VIF, CCF (max lag) với target.")
-
-if st.button("Tính lại bảng tổng hợp", type="secondary"):
-    with st.spinner("Đang tính..."):
-        try:
-            from statsmodels.stats.outliers_influence import variance_inflation_factor
-            from statsmodels.tsa.stattools import ccf as _ccf2
-
-            rows = []
-            Xv_all = numeric_df[candidate_cols].dropna()
-            X_const_all = np.column_stack([np.ones(len(Xv_all)), Xv_all.values])
-            for i, col in enumerate(candidate_cols):
-                pr = numeric_df[[col, TARGET_COL]].corr(method="pearson").loc[col, TARGET_COL]
-                sp = numeric_df[[col, TARGET_COL]].corr(method="spearman").loc[col, TARGET_COL]
-                try:
-                    vif_val = variance_inflation_factor(X_const_all, i+1)
-                except Exception:
-                    vif_val = float("nan")
-                try:
-                    sx = Xv_all[col].values
-                    sy = numeric_df[TARGET_COL].values[:len(sx)]
-                    cv = _ccf2(sx, sy, nlags=30, alpha=None)
-                    best_ccf = float(np.max(np.abs(cv)))
-                    best_lag = int(np.argmax(np.abs(cv)))
-                except Exception:
-                    best_ccf, best_lag = float("nan"), -1
-                rows.append({
-                    "Biến": col,
-                    "Pearson r": round(float(pr), 4),
-                    "|Pearson|": round(abs(float(pr)), 4),
-                    "Spearman rho": round(float(sp), 4),
-                    "|Spearman|": round(abs(float(sp)), 4),
-                    "VIF": round(float(vif_val), 2),
-                    "CCF max": round(best_ccf, 4),
-                    "CCF lag*": best_lag,
-                })
-
-            summary_df = pd.DataFrame(rows).sort_values("|Pearson|", ascending=False).reset_index(drop=True)
-            st.session_state["corr_summary"] = summary_df
-        except Exception as e:
-            st.error(f"Lỗi: {e}")
-
-if st.session_state.get("corr_summary") is not None:
-    sdf = st.session_state["corr_summary"]
-    st.dataframe(
-        sdf.style.format({
-            "Pearson r": "{:.4f}", "|Pearson|": "{:.4f}",
-            "Spearman rho": "{:.4f}", "|Spearman|": "{:.4f}",
-            "VIF": "{:.2f}", "CCF max": "{:.4f}",
-        }).background_gradient(subset=["|Pearson|","|Spearman|"], cmap="YlOrRd"),
-        use_container_width=True, height=420,
-    )
-else:
-    st.info("Nhấn **Tính lại bảng tổng hợp** để xem so sánh tất cả biến.")
-
-# ═══════════════════════════════════════════════════════════════════════════
-# CHON BIEN DUA VAO KIEM DINH TRANG 3
-# ═══════════════════════════════════════════════════════════════════════════
-st.divider()
-st.header("Chon bien dua vao kiem dinh chuan hoa thoi gian (Trang 3)")
-st.markdown("""
-Dua tren ket qua phan tich tuong quan, chon cac bien ung vien co tuong quan cao voi target
-de dua vao kiem dinh tinh dung (ADF · PP · KPSS), dong lien ket (Johansen) va nhan qua (Granger) o Trang 3.
-
-> **Luu y**: Day la buoc **loc bien ung vien** de giam khoi luong kiem dinh — chua phai chon Endo/Exog.
-> Viec phan cong Endo / Exog chinh thuc se thuc hien o **Trang 5**.
-""")
-
-# Goi y tu bang tong hop neu co
-corr_summary = st.session_state.get("corr_summary")
-if corr_summary is not None:
-    threshold = st.slider(
-        "Loc tu dong: lay bien co |Pearson| >=",
-        min_value=0.0, max_value=1.0, value=0.3, step=0.05,
-        help="Dieu chinh nguong de loc danh sach bien goi y",
-        key="corr_thresh_slider",
-    )
-    suggested = corr_summary[corr_summary["|Pearson|"] >= threshold]["Bien"].tolist()
-    if TARGET_COL in num_all and TARGET_COL not in suggested:
-        suggested = [TARGET_COL] + suggested
-    st.caption(f"Goi y: **{len(suggested)}** bien co |Pearson| >= {threshold}")
-else:
-    threshold = 0.3
-    suggested = num_all[:min(10, len(num_all))]
-    st.info("Chua co bang tong hop. Hay nhan 'Tinh lai bang tong hop' o tren de co goi y tu dong.")
-
-corr_prev = st.session_state.get("corr_selected_vars") or []
-corr_prev = [c for c in corr_prev if c in num_all]
-default_sel = corr_prev if corr_prev else suggested
-
-selected_for_ts = st.multiselect(
-    "Chon cac bien dua vao kiem dinh Trang 3",
-    options=num_all,
-    default=default_sel,
-    key="corr_ts_vars",
-    help="Chon TARGET + cac bien ngoai sinh co tuong quan cao.",
+Mọi phép tính dùng **sai phân bậc 1** và chỉ dùng đoạn **TRAIN** để tránh rò rỉ thông tin.
+"""
 )
 
-if len(selected_for_ts) >= 2:
-    st.subheader("Heatmap tuong quan cua tap bien da chon")
-    corr_sel = numeric_df[selected_for_ts].corr(method="pearson")
-    fig_h = go.Figure(go.Heatmap(
-        z=corr_sel.values, x=corr_sel.columns, y=corr_sel.index,
-        colorscale="RdBu", zmid=0, zmin=-1, zmax=1,
-        text=np.round(corr_sel.values, 2), texttemplate="%{text}",
-        colorbar=dict(title="r"),
-    ))
-    fig_h.update_layout(
-        title="Pearson Heatmap — tap bien da chon cho Trang 3",
-        height=max(380, 50 * len(selected_for_ts)),
-        margin=dict(l=10, r=10, t=50, b=10),
-    )
-    st.plotly_chart(fig_h, use_container_width=True)
+# ============================================================
+# BƯỚC 0 — NẠP DỮ LIỆU
+# ============================================================
+st.divider()
+st.subheader("0. Nạp dữ liệu")
+df = st.session_state.get("raw_data")
+if df is not None:
+    st.success(f"Dùng dữ liệu từ Trang 1: `{st.session_state.get('data_file_name') or 'raw_data'}` "
+               f"({df.shape[0]:,} dòng × {df.shape[1]} cột).")
+else:
+    st.info("Chưa có dữ liệu từ Trang 1. Bạn có thể upload CSV hoặc dùng dữ liệu demo.")
+    source = st.radio("Nguồn dữ liệu", ["Dữ liệu demo", "Upload CSV"], horizontal=True)
+    if source == "Upload CSV":
+        f = st.file_uploader("Chọn file CSV (có cột ngày)", type="csv")
+        if f is None:
+            st.stop()
+        df = pd.read_csv(f)
+    else:
+        df = demo_data()
+
+# ============================================================
+# BƯỚC 1 — CHỌN CỘT & THAM SỐ
+# ============================================================
+st.subheader("1. Chọn cột và tham số")
+group_cols = [c for c in (PROVINCE_COL, COFFEE_TYPE_COL) if c in df.columns]
+date_default = st.session_state.get("date_col", "date")
+date_default = date_default if date_default in df.columns else df.columns[0]
+num_cols = [c for c in df.select_dtypes("number").columns if c not in group_cols and c != date_default]
+if len(num_cols) < 2:
+    st.error("Cần ít nhất 2 cột số (1 biến giá Y và 1 biến X).")
+    st.stop()
+
+
+def _is_price(name):
+    toks = set(re.sub(r"[^0-9a-zà-ỹ]+", " ", str(name).lower()).split())
+    return bool(toks & {"price", "gia", "giá", "target"}) or any(t.startswith("price") for t in toks)
+
+
+price_like = [c for c in num_cols if _is_price(c)]
+c1, c2, c3 = st.columns(3)
+date_col = c1.selectbox("Cột ngày", list(df.columns), index=list(df.columns).index(date_default))
+y_col = c2.selectbox("Biến mục tiêu Y (giá)", num_cols,
+                     index=num_cols.index(price_like[0]) if price_like else 0)
+if COFFEE_TYPE_COL in df.columns:
+    types = sorted(df[COFFEE_TYPE_COL].dropna().astype(str).unique())
+    ctype = c3.selectbox("Loại cà phê", types + [ALL_TYPES],
+                         help="Mỗi loại có mức giá khác nhau; nên phân tích riêng từng loại.")
+else:
+    ctype = ALL_TYPES
+    c3.caption("Dữ liệu không có cột loại cà phê.")
+x_options = [c for c in num_cols if c != y_col]
+x_cols = st.multiselect("Biến ngoại sinh X", x_options, default=x_options)
+if not x_cols:
+    st.warning("Chọn ít nhất 1 biến X.")
+    st.stop()
+
+p1, p2, p3 = st.columns(3)
+train_frac = p1.slider("Tỷ lệ dữ liệu TRAIN", 0.5, 0.9, 0.7, 0.05,
+                       help="Chỉ dùng đoạn đầu để chọn biến, tránh rò rỉ từ VAL/TEST.")
+corr_method = p2.radio("Kiểu tương quan", ["pearson", "spearman"], horizontal=True,
+                       help="Spearman bền hơn khi sai phân giá có nhiều giá trị cực đoan.")
+alpha = p3.number_input("Mức ý nghĩa α", 0.001, 0.2, 0.05, 0.005)
+
+# ============================================================
+# BƯỚC 2 — CHUẨN BỊ CHUỖI
+# ============================================================
+d = df.copy()
+d[date_col] = pd.to_datetime(d[date_col], errors="coerce")
+d = d.dropna(subset=[date_col])
+if ctype != ALL_TYPES:
+    d = d[d[COFFEE_TYPE_COL].astype(str) == ctype]
+if d.empty:
+    st.error("Không còn dòng nào sau khi lọc.")
+    st.stop()
+
+unit = {"Daily": "ngày", "Weekly": "tuần", "Monthly": "tháng"}.get(st.session_state.get("data_frequency"), "kỳ")
+
+y_series = d.groupby(date_col)[y_col].mean().sort_index()
+X_all = d.groupby(date_col)[x_cols].mean().sort_index()
+n_train = int(len(y_series) * train_frac)
+if n_train < 60:
+    st.error(f"Chỉ có {n_train} quan sát TRAIN (< 60): quá ít để phân tích tương quan/lag.")
+    st.stop()
+
+y_train, X_train = y_series.iloc[:n_train], X_all.iloc[:n_train]
+dy, dX = y_train.diff(), X_train.diff()
+
+# Bỏ X có sai phân hằng số (không tính được tương quan)
+const_cols = [c for c in dX.columns if not (dX[c].std() > 0)]
+if const_cols:
+    st.warning("Đã loại biến X có sai phân hằng số trong đoạn TRAIN: " + ", ".join(const_cols))
+    dX = dX.drop(columns=const_cols)
+    X_train = X_train.drop(columns=const_cols)
+if dX.empty:
+    st.error("Không còn biến X hợp lệ.")
+    st.stop()
+X_names = list(dX.columns)
+
+zero_share = {c: 100 * float((dX[c].dropna() == 0).mean()) for c in X_names}
+stuck = [c for c, v in zero_share.items() if v >= ZERO_DIFF_FLAG]
+if stuck:
+    st.warning("Biến X có ≥ %.0f%% sai phân bằng 0 (nhiều khả năng tần suất thấp hơn bảng, ví dụ dữ liệu tháng "
+               "lặp xuống ngày): %s. CCF/Granger với các biến này kém nhạy; xem mục C.6 ở Trang 1."
+               % (ZERO_DIFF_FLAG, ", ".join(stuck)))
+
+st.success(f"TRAIN: {n_train:,} / {len(y_series):,} {unit} · {len(X_names)} biến X · "
+           f"Y = `{y_col}` · Loại: {ctype}")
+st.caption("Y và X được lấy trung bình theo ngày trên các tỉnh (và loại, nếu chọn tất cả). "
+           f"Lag tính theo kỳ quan sát (1 kỳ ≈ 1 {unit}).")
+
+# ============================================================
+# BƯỚC 3 — BỐN TAB PHÂN TÍCH
+# ============================================================
+st.divider()
+st.subheader("2. Phân tích")
+tab1, tab2, tab3, tab4 = st.tabs(["1 · Y–Y (các tỉnh)", "2 · X–X & VIF", "3 · CCF (lag)", "4 · Granger"])
+
+# ---------- Tab 1 ----------
+with tab1:
+    st.markdown("**Câu hỏi:** có thể thay các tỉnh bằng 1 chuỗi giá đại diện (trung bình) không?")
+    if PROVINCE_COL not in d.columns:
+        st.info("Dữ liệu không có cột tỉnh nên không cần rút gọn.")
+    else:
+        wide = (d.pivot_table(index=date_col, columns=PROVINCE_COL, values=y_col, aggfunc="mean")
+                .sort_index().iloc[:n_train].dropna(axis=1, how="all"))
+        if wide.shape[1] < 2:
+            st.info("Chỉ có 1 tỉnh.")
+        else:
+            c_diff = wide.diff().corr(method=corr_method)
+            st.plotly_chart(corr_heatmap(c_diff, "Tương quan giữa các tỉnh (sai phân)"), **STRETCH)
+            off = c_diff.where(~np.eye(len(c_diff), dtype=bool))
+            weakest = float(off.min().min())
+            avg = float(np.nanmean(off.values))
+            m1, m2 = st.columns(2)
+            m1.metric("ρ trung bình giữa các cặp tỉnh", f"{avg:.2f}")
+            m2.metric("ρ của cặp yếu nhất", f"{weakest:.2f}")
+            if weakest >= MIN_RHO_Y:
+                st.success(f"**Kết luận:** cặp yếu nhất vẫn có ρ = {weakest:.2f} ≥ {MIN_RHO_Y} → "
+                           "dùng 1 chuỗi đại diện (trung bình các tỉnh) là hợp lý.")
+            else:
+                i, j = np.unravel_index(np.nanargmin(off.values), off.shape)
+                st.warning(f"**Kết luận:** cặp {off.index[i]} – {off.columns[j]} chỉ có ρ = {weakest:.2f} < {MIN_RHO_Y} "
+                           "→ các tỉnh khác nhau đáng kể, cân nhắc giữ riêng hoặc loại tỉnh lệch.")
+            st.caption(f"Ngưỡng {MIN_RHO_Y} là tham số ứng dụng, không phải chuẩn học thuật.")
+
+# ---------- Tab 2 ----------
+with tab2:
+    st.markdown("**Câu hỏi:** những biến X nào mang thông tin giống nhau?")
+    vif = vif_table(dX)
+    vif_map = dict(zip(vif["Biến X"], vif["VIF"]))
+    if len(X_names) < 2:
+        st.info("Cần ít nhất 2 biến X.")
+    else:
+        cmat = dX.corr(method=corr_method)
+        st.plotly_chart(corr_heatmap(cmat, "Tương quan X–X (sai phân)"), **STRETCH)
+        pairs = [(a, b, cmat.loc[a, b]) for i, a in enumerate(X_names) for b in X_names[i + 1:]
+                 if abs(cmat.loc[a, b]) >= HIGH_CORR_X]
+        if pairs:
+            st.warning(f"**Cặp X trùng thông tin (|ρ| ≥ {HIGH_CORR_X}):** "
+                       + "; ".join(f"{a} – {b} (ρ = {r:.2f})" for a, b, r in pairs)
+                       + ". Nên giữ 1 biến trong mỗi cặp.")
+        else:
+            st.success(f"Không có cặp X nào có |ρ| ≥ {HIGH_CORR_X}.")
+        st.dataframe(vif.style.format({"VIF": "{:.2f}"}), hide_index=True, **STRETCH)
+        n_high = int((vif["VIF"] >= VIF_STRONG).sum())
+        if n_high:
+            st.warning(f"**Kết luận:** {n_high} biến có VIF ≥ {VIF_STRONG:.0f} → đa cộng tuyến mạnh, "
+                       "nên bỏ bớt hoặc gom nhóm.")
+        else:
+            st.success(f"**Kết luận:** không biến nào có VIF ≥ {VIF_STRONG:.0f} → đa cộng tuyến không đáng lo.")
+        st.caption(f"VIF ≥ {VIF_WARN:.0f}: cảnh báo nhẹ; ≥ {VIF_STRONG:.0f}: cảnh báo mạnh (quy tắc kinh nghiệm). "
+                   "VIF tính từ ma trận tương quan của sai phân TRAIN.")
+
+# ---------- Tab 3 ----------
+with tab3:
+    st.markdown("**Câu hỏi:** biến X dẫn trước Y bao nhiêu kỳ? (k > 0: X dẫn trước)")
+    default_L = int(min(40, max(5, np.floor(10 * np.log10(max(n_train, 10))))))
+    max_lag = st.slider("Số lag tối đa", 5, 60, default_L)
+    ccf_res, ccf_best = {}, {}
+    for x in X_names:
+        tbl, band, band_adj, n_eff = ccf_table(dy, dX[x], max_lag, alpha)
+        ccf_res[x] = (tbl, band, band_adj, n_eff)
+        if tbl is None:
+            ccf_best[x] = None
+            continue
+        sig = tbl[(tbl["Lag k"] > 0) & tbl["Vượt ngưỡng hiệu chỉnh"]]
+        if sig.empty:
+            ccf_best[x] = {"lag": None, "r": np.nan, "n_sig": 0}
+        else:
+            top = sig.loc[sig["CCF"].abs().idxmax()]
+            ccf_best[x] = {"lag": int(top["Lag k"]), "r": float(top["CCF"]), "n_sig": len(sig)}
+
+    summ = pd.DataFrame([{
+        "Biến X": x,
+        "Lag mạnh nhất": ("—" if (ccf_best[x] is None or ccf_best[x]["lag"] is None) else ccf_best[x]["lag"]),
+        "CCF tại lag đó": (np.nan if ccf_best[x] is None else ccf_best[x]["r"]),
+        "Số lag vượt ngưỡng hiệu chỉnh": ("không đủ mẫu" if ccf_best[x] is None else ccf_best[x]["n_sig"]),
+    } for x in X_names])
+    st.markdown("**Tóm tắt mọi biến X** (chỉ tính lag k > 0, ngưỡng đã hiệu chỉnh theo số lag)")
+    st.dataframe(summ.style.format({"CCF tại lag đó": "{:.3f}"}), hide_index=True, **STRETCH)
+
+    chosen_x = st.selectbox("Xem biểu đồ CCF của biến", X_names)
+    tbl, band, band_adj, n_eff = ccf_res[chosen_x]
+    if tbl is None:
+        st.info(f"Không đủ quan sát liên tục (cần ≥ {MIN_OBS + max_lag}) hoặc chuỗi sau lọc là hằng số.")
+    else:
+        colors = ["#6366f1" if s else "#94a3b8" for s in tbl["Vượt ngưỡng hiệu chỉnh"]]
+        fig = go.Figure(go.Bar(x=tbl["Lag k"], y=tbl["CCF"], marker_color=colors))
+        for s in (band, -band):
+            fig.add_hline(y=s, line_dash="dash", line_color="#f59e0b")
+        for s in (band_adj, -band_adj):
+            fig.add_hline(y=s, line_dash="dot", line_color="#dc2626")
+        fig.update_layout(title=f"CCF: {chosen_x} → {y_col}", xaxis_title="Lag k (kỳ)",
+                          yaxis_title="Tương quan", height=380, showlegend=False)
+        st.plotly_chart(fig, **STRETCH)
+        b = ccf_best[chosen_x]
+        if b and b["lag"] is not None:
+            st.success(f"**Kết luận:** {chosen_x} dẫn trước {y_col} rõ nhất tại lag {b['lag']} (CCF = {b['r']:.3f}); "
+                       f"có {b['n_sig']} lag vượt ngưỡng hiệu chỉnh.")
+        else:
+            st.info("**Kết luận:** không có lag k > 0 nào vượt ngưỡng hiệu chỉnh.")
+        st.caption(f"Cam (nét đứt) = ngưỡng từng lag ±{band:.3f}; đỏ (chấm) = ngưỡng hiệu chỉnh Bonferroni "
+                   f"theo {max_lag} lag ±{band_adj:.3f}; n = {n_eff:,}. Cột tím là lag vượt ngưỡng đỏ. "
+                   "X và Y được lọc bằng cùng bộ AR (tiền trắng hóa) để tránh tương quan giả.")
+
+# ---------- Tab 4 ----------
+with tab4:
+    st.markdown("**Câu hỏi:** sau khi đã biết quá khứ của Y, quá khứ của X có giúp dự báo Y thêm không?")
+    g_lag = st.slider("Số lag dùng trong kiểm định", 1, 30, 5)
+    rows = []
+    for x in X_names:
+        F, p, n_used = granger_test(dy, dX[x], g_lag)
+        _, p_rev, _ = granger_test(dX[x], dy, g_lag)
+        rows.append({"Biến X": x, "F": F, "p (X→Y)": p, "N dùng": n_used, "p ngược (Y→X)": p_rev})
+    g = pd.DataFrame(rows)
+    n_tests = int(g["p (X→Y)"].notna().sum())
+    g["p hiệu chỉnh"] = np.minimum(g["p (X→Y)"] * max(n_tests, 1), 1.0)
+    g["Kết quả"] = np.where(g["p (X→Y)"].isna(), "không đủ mẫu",
+                            np.where(g["p hiệu chỉnh"] < alpha, "giữ", "chưa đủ bằng chứng"))
+    granger_ok = dict(zip(g["Biến X"], g["Kết quả"] == "giữ"))
+    granger_p = dict(zip(g["Biến X"], g["p hiệu chỉnh"]))
+    st.dataframe(g.style.format({"F": "{:.3f}", "p (X→Y)": "{:.4g}", "p ngược (Y→X)": "{:.4g}",
+                                 "p hiệu chỉnh": "{:.4g}"}), hide_index=True, **STRETCH)
+    kept = g.loc[g["Kết quả"] == "giữ", "Biến X"].tolist()
+    if kept:
+        st.success("**Kết luận:** quá khứ của " + ", ".join(kept) + " giúp dự báo Y (đã hiệu chỉnh Bonferroni).")
+    else:
+        st.info("**Kết luận:** chưa biến X nào có bằng chứng Granger đủ mạnh.")
+    feedback = g.loc[(g["p ngược (Y→X)"] < alpha) & g["p ngược (Y→X)"].notna(), "Biến X"].tolist()
+    if feedback:
+        st.caption("Lưu ý: giá Y cũng giúp dự báo " + ", ".join(feedback) +
+                   " (phản hồi hai chiều, p ngược chưa hiệu chỉnh) → các biến này có thể không hoàn toàn ngoại sinh.")
+    st.caption("Wald F với sai số chuẩn bền HC1 trên sai phân. Granger chỉ đo quan hệ dự báo tuyến tính, "
+               "KHÔNG phải quan hệ nhân quả; không bác bỏ H0 chưa đủ để loại biến.")
+
+# ============================================================
+# BƯỚC 4 — SHORTLIST
+# ============================================================
+st.divider()
+st.subheader("3. Shortlist biến X")
+short = pd.DataFrame({
+    "Biến X": X_names,
+    "Lag CCF mạnh nhất": [("—" if (ccf_best[x] is None or ccf_best[x]["lag"] is None) else ccf_best[x]["lag"])
+                          for x in X_names],
+    "CCF có ý nghĩa": [bool(ccf_best[x] and ccf_best[x]["lag"] is not None) for x in X_names],
+    "Granger giữ": [bool(granger_ok.get(x, False)) for x in X_names],
+    "p Granger (hiệu chỉnh)": [granger_p.get(x, np.nan) for x in X_names],
+    "VIF": [vif_map.get(x, np.nan) for x in X_names],
+})
+short["Số tiêu chí (0–2)"] = short["CCF có ý nghĩa"].astype(int) + short["Granger giữ"].astype(int)
+short["Cảnh báo VIF"] = np.where(short["VIF"] >= VIF_STRONG, "VIF cao: cân nhắc bỏ/gom nhóm", "")
+short = short.sort_values(["Số tiêu chí (0–2)", "VIF"], ascending=[False, True]).reset_index(drop=True)
+st.dataframe(short.style.format({"p Granger (hiệu chỉnh)": "{:.4g}", "VIF": "{:.2f}"}), hide_index=True, **STRETCH)
+st.download_button("⬇ Tải shortlist (CSV)", short.to_csv(index=False).encode("utf-8-sig"),
+                   file_name="shortlist_bien_X.csv", mime="text/csv")
+
+default_keep = short.loc[short["Số tiêu chí (0–2)"] >= 1, "Biến X"].tolist() or X_names
+keep = st.multiselect("Biến X giữ lại cho bước sau", X_names, default=default_keep,
+                      help="Mặc định giữ biến thỏa ≥ 1 tiêu chí. Đây là bước sàng lọc, bạn có thể chỉnh tay.")
+if st.button("Lưu lựa chọn", type="primary"):
+    st.session_state["selected_vars"] = [y_col] + keep
+    st.session_state["corr_results"] = {
+        "y": y_col, "coffee_type": ctype, "train_frac": float(train_frac), "alpha": float(alpha),
+        "corr_method": corr_method, "max_lag": int(max_lag), "granger_lag": int(g_lag),
+        "shortlist": short.to_dict(orient="records"), "kept": keep,
+    }
+    st.success(f"Đã lưu: Y = {y_col}, X = {', '.join(keep) if keep else '(không có)'}")
 
 st.divider()
-if st.button("Luu va chuyen sang Trang 3", type="primary", use_container_width=True):
-    if not selected_for_ts:
-        st.error("Chon it nhat 1 bien.")
-    else:
-        st.session_state["corr_selected_vars"] = selected_for_ts
-        st.success(
-            f"Da luu {len(selected_for_ts)} bien: "
-            f"{', '.join(selected_for_ts[:5])}{'...' if len(selected_for_ts) > 5 else ''}"
-        )
-        st.switch_page("pages/3_Phan_tich_chuoi_thoi_gian.py")
-
+if st.button("← Về Trang 1", key="nav_back", **STRETCH):
+    st.switch_page("pages/1_Tai_du_lieu.py")
