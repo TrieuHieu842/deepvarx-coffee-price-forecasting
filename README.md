@@ -11,7 +11,7 @@ Dự án tập trung nghiên cứu cách các mô hình chuỗi thời gian đa 
 Dự án hướng đến các mục tiêu chính:
 
 * Tìm hiểu lý thuyết về chuỗi thời gian đơn biến và đa biến.
-* Nghiên cứu các mô hình **VAR, VARX, LSTM và DeepVARX**.
+* Nghiên cứu các mô hình **VAR, VARX, VARX-L, LSTM, DeepVAR và DeepVARX**.
 * Phân tích mối quan hệ giữa giá cà phê và các biến liên quan.
 * Xây dựng các mô hình dự báo giá thu mua cà phê ở Việt Nam.
 * So sánh khả năng dự báo của các mô hình.
