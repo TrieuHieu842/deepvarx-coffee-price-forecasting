@@ -41,11 +41,11 @@ PROFILES = {
     "DeepVAR": {
         "title": "DeepVAR", "family": "deep",
         "latex": [r"Y_t = f_\theta\!\left(Y_{t-1}, \dots, Y_{t-p}\right) + \epsilon_t"],
-        "use": "Tham số hoá trực tiếp phương trình VAR bằng mạng nơ-ron (LSTM/RNN), loại bỏ ràng buộc tuyến tính. "
+        "use": "Tham số hoá trực tiếp phương trình VAR bằng mạng nơ-ron song song K MLP (Altmeyer et al., 2021), loại bỏ ràng buộc tuyến tính. "
                "So sánh trực tiếp với VAR để thấy tác dụng của phi tuyến trên cùng chuỗi Y.",
-        "pros": ["Bắt được động lực phi tuyến của chính Y"],
+        "pros": ["Bắt được động lực phi tuyến của chính Y trên toàn bộ K tỉnh", "Kiến trúc equation-by-equation không rò rỉ tương lai"],
         "cons": ["Không dùng biến ngoại sinh", "Hộp đen"],
-        "impl": "Global: LSTM chỉ nhận chuỗi giá Y (Standard Scaler theo tỉnh, d = 0) + embedding tỉnh.",
+        "impl": "Mạng nơ-ron song song K MLP từ modules/models/deepvar.py (fit đồng thời K tỉnh, dự báo rolling 1-step về VNĐ/kg).",
     },
     "DeepVARX": {
         "title": "DeepVARX (Mô hình đề xuất)", "family": "deep",

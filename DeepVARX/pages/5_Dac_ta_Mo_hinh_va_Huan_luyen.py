@@ -8,6 +8,7 @@ from modules.data_utils import difference, metrics
 from modules.model_specs import ORDER, PROFILES, allocation
 from modules.models.var_model import VARModel
 from modules.models.varx_model import VARXModel
+from modules.models.deepvar import DeepVAR, DeepVARConfig
 from modules.models.baseline_varx import run_local_pkg, select_order
 from modules.ui import require, setup_page
 
@@ -160,6 +161,58 @@ if run:
             bar.progress(i / len(ents))
         pred = pd.concat(preds, ignore_index=True)
         out["model"] = models
+    elif name == "DeepVAR":
+        from modules.models.deepvar import DeepVAR, DeepVARConfig
+
+        # Dựng ma trận nội sinh Y (T, K) từ bảng dữ liệu panel
+        piv_y = pk["C"].pivot(index=date_col, columns=entity_col, values="y_level").sort_index()
+        piv_y = piv_y[[e for e in ents if e in piv_y.columns]]
+        Y_arr = piv_y.values.astype(np.float64)
+        T, K = Y_arr.shape
+
+        is_train = piv_y.index <= pd.Timestamp(train_end)
+        n_train_total = int(is_train.sum())
+        n_val = max(1, int(n_train_total * 0.15))
+        n_train = n_train_total - n_val
+
+        log(f"[nạp mô hình] modules.models.deepvar.DeepVAR (Mạng K={K} MLP song song)")
+        log(f"[model] DeepVAR · {K} tỉnh song song · bậc trễ p={hp['seq_len']} · hidden=({hp['hidden']}, {max(16, hp['hidden']//2)}) · "
+            f"train/val/test={n_train}/{n_val}/{T - n_train_total}")
+
+        cfg = DeepVARConfig(
+            p=hp["seq_len"],
+            hidden=(hp["hidden"], max(16, hp["hidden"] // 2)),
+            dropout=0.1,
+            lr=hp["lr"],
+            batch_size=hp["batch"],
+            max_epochs=hp["epochs"],
+            patience=hp["patience"] if hp["early"] else hp["epochs"] + 1,
+            seed=42
+        )
+        model = DeepVAR(cfg, device="cpu")
+
+        def cb(ep, total, trl, val):
+            bar.progress(min(1.0, ep / total))
+            log(f"Epoch {ep:03d}/{total:03d} - train_mse: {trl:.5f} - val_mse: {val:.5f}")
+
+        model.fit(Y_arr, None, n_train, n_val, verbose=0, progress_cb=cb)
+        if hp["early"]:
+            log(f"[early-stopping] epoch tốt nhất = {model.best_epoch}")
+
+        y_hat, idx = model.predict(Y_arr, None, start=n_train_total)
+        test_dates = piv_y.index[idx]
+
+        prov_preds = []
+        for col_i, e in enumerate(piv_y.columns):
+            prov_preds.append(pd.DataFrame({
+                "date": test_dates,
+                "province": e,
+                "y_true": piv_y.iloc[idx, col_i].values,
+                "y_pred": y_hat[:, col_i],
+                "y_prev": piv_y.iloc[idx - 1, col_i].values
+            }))
+        pred = pd.concat(prov_preds, ignore_index=True)
+        out.update(model=model, history=pd.DataFrame(model.history_detail))
     else:
         from modules.models.deepvarx import DeepVARX, prepare_panel_windows, train_model
         from modules.models.lstm_attention import LSTMForecaster, LSTMAttentionForecaster
