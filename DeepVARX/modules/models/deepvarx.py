@@ -108,7 +108,8 @@ def train_model(model: nn.Module, data: dict, epochs: int = 60, lr: float = 1e-3
         with torch.no_grad():
             if can_track:
                 out, alpha, _ = model(Xva, P['Pva'], return_attention=True)
-                attn_rows.append((alpha.mean(dim=(0, 1)) * model.n_in).numpy())
+                if alpha is not None:
+                    attn_rows.append((alpha.mean(dim=(0, 1)) * model.n_in).numpy())
             else:
                 out = model(Xva, P['Pva'])
             va_loss = loss_fn(out, yva).item()
@@ -129,9 +130,11 @@ def train_model(model: nn.Module, data: dict, epochs: int = 60, lr: float = 1e-3
     with torch.no_grad():
         if getattr(model, "has_attention", False):
             out, alpha, beta = model(Xte, P['Pte'], return_attention=True)
-            result["attn_lag"] = (alpha.mean(dim=0) * model.n_in).numpy()     # (L, V)
-            result["attn_time"] = beta.mean(dim=0).numpy()                     # (L,)
-            result["attn_test"] = (alpha.mean(dim=1) * model.n_in).numpy()     # (N_test, V): gate theo từng ngày TEST
+            if alpha is not None:
+                result["attn_lag"] = (alpha.mean(dim=0) * model.n_in).numpy()     # (L, V)
+                result["attn_test"] = (alpha.mean(dim=1) * model.n_in).numpy()     # (N_test, V): gate theo từng ngày TEST
+            if beta is not None:
+                result["attn_time"] = beta.mean(dim=0).numpy()                     # (L,)
         else:
             out = model(Xte, P['Pte'])
     result["pred_scaled"] = out.squeeze(-1).numpy()
@@ -147,6 +150,8 @@ def prepare_panel_windows(C: pd.DataFrame, date_col: str, entity_col: str, targe
     NGÀY chung: test = ngày > train_end; val = phần cuối theo ngày của TRAIN. Dữ liệu C đã chuẩn hoá theo từng tỉnh."""
     from numpy.lib.stride_tricks import sliding_window_view
 
+    C = C.copy()
+    C[date_col] = pd.to_datetime(C[date_col])
     cols = [target] + list(feats)
     X, y, dates, pid, prov, lvl, prev = [], [], [], [], [], [], []
     for e, g in C.groupby(entity_col, observed=True, sort=False):

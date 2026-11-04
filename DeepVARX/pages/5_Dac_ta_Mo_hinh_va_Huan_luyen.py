@@ -6,6 +6,8 @@ import streamlit as st
 
 from modules.data_utils import difference, metrics
 from modules.model_specs import ORDER, PROFILES, allocation
+from modules.models.var_model import VARModel
+from modules.models.varx_model import VARXModel
 from modules.models.baseline_varx import run_local_pkg, select_order
 from modules.ui import require, setup_page
 
@@ -111,6 +113,9 @@ else:
                                     help="0 = không dùng mã hóa tỉnh"))
     hp["early"] = bool(e4.checkbox("Bật Early Stopping", value=True, key=f"es_{name}"))
     hp["patience"] = int(e5.number_input("Patience", 2, 100, 8, key=f"pa_{name}", disabled=not hp["early"]))
+    if name == "LSTM":
+        hp["use_attention"] = st.checkbox("Bật Temporal Attention (LSTM + Attention)", value=False, key=f"att_{name}",
+                                          help="Dùng cơ chế Temporal Attention từ modules/models/lstm_attention.py")
     if not TORCH_OK:
         st.error("Chưa cài PyTorch — chạy `pip install torch` để huấn luyện mô hình học sâu.")
     st.caption(f"Mô hình Global học trên toàn panel ({len(ents)} tỉnh) nên một epoch lâu hơn nhiều so với một tỉnh; nên thử ít epoch trước.")
@@ -137,6 +142,8 @@ if run:
     log(f"$ train --model {name} --scope {alloc['scope']} --data \"{alloc['label']}\"")
     out = {"scope": alloc["scope"], "feats": alloc["feats"], "hp": hp, "history": None, "attn": None}
     if is_linear:
+        src_info = "modules.models.var_model.VARModel" if name == "VAR" else "modules.models.varx_model.VARXModel"
+        log(f"[nạp mô hình] {src_info} (Huấn luyện {len(ents)} tỉnh theo cơ chế Local)")
         preds, models = [], {}
         for i, e in enumerate(ents, 1):
             g = groups[e]
@@ -155,13 +162,23 @@ if run:
         out["model"] = models
     else:
         from modules.models.deepvarx import DeepVARX, prepare_panel_windows, train_model
-        from modules.models.lstm_attention import LSTMForecaster
+        from modules.models.lstm_attention import LSTMForecaster, LSTMAttentionForecaster
 
         data = prepare_panel_windows(pk["C"], date_col, entity_col, target, alloc["feats"], hp["seq_len"], train_end,
                                      meta["scalers"])
         n_in = len(data["cols"])
-        Cls = DeepVARX if name == "DeepVARX" else LSTMForecaster
+        if name == "DeepVARX":
+            Cls = DeepVARX
+            src_name = "modules.models.deepvarx.DeepVARX"
+        elif name == "LSTM" and hp.get("use_attention"):
+            Cls = LSTMAttentionForecaster
+            src_name = "modules.models.lstm_attention.LSTMAttentionForecaster (Temporal Attention)"
+        else:
+            Cls = LSTMForecaster
+            src_name = f"modules.models.lstm_attention.LSTMForecaster ({name})"
+
         model = Cls(n_in, hp["hidden"], hp["layers"], 0.1, len(ents), hp["emb"])
+        log(f"[nạp mô hình] {src_name}")
         log(f"[model] {name} · {n_in} biến vào · hidden={hp['hidden']} · embedding tỉnh={hp['emb']} · "
             f"windows train/val/test={len(data['Xtr']):,}/{len(data['Xva']):,}/{len(data['Xte']):,}")
 
@@ -169,18 +186,19 @@ if run:
             bar.progress(min(1.0, ep / total))
             log(f"Epoch {ep:03d}/{total:03d} - loss: {trl:.5f} - val_loss: {val:.5f}")
 
+        track_attn = name == "DeepVARX" or (name == "LSTM" and hp.get("use_attention", False))
         tr = train_model(model, data, hp["epochs"], hp["lr"], hp["batch"],
-                         hp["patience"] if hp["early"] else hp["epochs"] + 1, 42, name == "DeepVARX", cb,
+                         hp["patience"] if hp["early"] else hp["epochs"] + 1, 42, track_attn, cb,
                          restore_best=hp["early"])
         if hp["early"]:
             log(f"[early-stopping] epoch tốt nhất = {tr['best_epoch']}")
         pred = pd.DataFrame({"date": data["dates_te"], "province": data["prov_te"], "y_true": data["true_te"],
                              "y_pred": tr["pred_scaled"] * data["sd_te"] + data["mu_te"], "y_prev": data["prev_te"]})
         out.update(model=model, history=tr["history"])
-        if "attn_test" in tr:
-            out["attn"] = {"cols": data["cols"], "test": tr["attn_test"], "dates": data["dates_te"], "prov": data["prov_te"],
-                           "epoch": tr.get("attn_epoch"), "lag": tr["attn_lag"], "time": tr["attn_time"],
-                           "best_epoch": tr["best_epoch"]}
+        if "attn_test" in tr or "attn_time" in tr:
+            out["attn"] = {"cols": data["cols"], "test": tr.get("attn_test"), "dates": data["dates_te"], "prov": data["prov_te"],
+                           "epoch": tr.get("attn_epoch"), "lag": tr.get("attn_lag"), "time": tr.get("attn_time"),
+                           "best_epoch": tr.get("best_epoch")}
     by = pd.DataFrame([{"province": e, **metrics(g["y_true"], g["y_pred"])} for e, g in pred.groupby("province")])
     avg = {k: float(by[k].mean()) for k in ("RMSE", "MAE", "MAPE (%)")}
     out.update(pred=pred, by_prov=by, metrics=avg, seconds=time.perf_counter() - t0)

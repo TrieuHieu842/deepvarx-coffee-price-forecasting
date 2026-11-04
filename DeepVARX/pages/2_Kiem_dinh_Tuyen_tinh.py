@@ -5,14 +5,14 @@ import streamlit as st
 
 from modules.data_utils import difference
 from modules.stat_tests import (adf_kpss, ccf_prewhitened, granger_hc1, integration_order, johansen_rank,
-                                summarize_ccf, summarize_granger)
+                             summarize_ccf, summarize_granger)
 from modules.ui import fmt_p, require, reset_downstream, setup_page, step_box
 
 setup_page("2 · Kiểm định tuyến tính")
 st.title("Trang 2 · Kiểm định tuyến tính (Luồng 1)")
 st.caption("Dữ liệu đầu vào: chuỗi của **tỉnh đại diện**. Thu thập bằng chứng tuyến tính (bậc d, CCF, Granger, Johansen → VAR hay VECM). "
            "Việc chọn biến vào Tập Cơ Sở được chốt ở **Trang 4**.")
-require(["df_clean"], "Chưa có dữ liệu sạch. Hãy hoàn tất **Trang 1** và bấm *Chốt dữ liệu sạch*.")
+require(["df_clean", "df_clean_panel", "x_cols", "train_n", "target"], "Chưa có dữ liệu sạch. Hãy hoàn tất **Trang 1** và bấm *Chốt dữ liệu sạch*.")
 
 df = st.session_state["df_clean"]
 target = st.session_state["target"]
@@ -82,7 +82,9 @@ with tab1:
     show.insert(1, "Vai trò", ["Y" if b == target else "X" for b in show["Biến"]])
     st.dataframe(show, width="stretch", hide_index=True)
 
-    rec = int(stn["d đề xuất"].max())
+    valid_d = stn["d đề xuất"].dropna()
+    rec = int(valid_d.max()) if len(valid_d) else 1
+    rec = max(0, min(2, rec))
     c1, c2 = st.columns([1, 3])
     d_pick = c1.number_input("Bậc sai phân d (chung)", 0, 2, rec)
     c2.info(f"Đề xuất: **d = {rec}** (lớn nhất trong các biến). \n VARX/VARX-L bắt buộc dùng dữ liệu đã sai phân bậc d; "
@@ -117,17 +119,20 @@ with tab2:
     st.dataframe(view.style.format({"CCF tại lag đó": "{:.3f}", "Ngưỡng Bonferroni": "{:.3f}"}),
                  width="stretch", hide_index=True)
 
-    pick = st.selectbox("Vẽ CCF cho biến", xcols)
-    tb = ccf_all[pick]
-    fig = go.Figure()
-    fig.add_trace(go.Bar(x=tb["lag"], y=tb["ccf"], marker_color=np.where(tb["significant"], "#C0392B", "#95A5A6"),
-                         name="CCF"))
-    thr = float(tb["threshold"].iloc[0])
-    for s in (thr, -thr):
-        fig.add_hline(y=s, line_dash="dash", line_color="#2C3E50")
-    fig.update_layout(height=340, margin=dict(t=30, b=10), xaxis_title="Lag k (k>0: X dẫn trước Y)",
-                      yaxis_title="CCF (pre-whitened)", title=f"CCF: {pick} → {target}", showlegend=False)
-    st.plotly_chart(fig, width="stretch")
+    if xcols:
+        pick = st.selectbox("Vẽ CCF cho biến", xcols)
+        if pick and pick in ccf_all:
+            tb = ccf_all[pick]
+            fig = go.Figure()
+            fig.add_trace(go.Bar(x=tb["lag"], y=tb["ccf"], marker_color=np.where(tb["significant"], "#C0392B", "#95A5A6"),
+                                 name="CCF"))
+            thr = float(tb["threshold"].iloc[0]) if len(tb) and pd.notna(tb["threshold"].iloc[0]) else 0.0
+            for s in (thr, -thr):
+                if s != 0:
+                    fig.add_hline(y=s, line_dash="dash", line_color="#2C3E50")
+            fig.update_layout(height=340, margin=dict(t=30, b=10), xaxis_title="Lag k (k>0: X dẫn trước Y)",
+                              yaxis_title="CCF (pre-whitened)", title=f"CCF: {pick} → {target}", showlegend=False)
+            st.plotly_chart(fig, width="stretch")
 
 # =============================================================================== TAB 3
 with tab3:
@@ -144,13 +149,15 @@ with tab3:
     st.caption("Lưu ý: Granger chỉ đo quan hệ dự báo **tuyến tính**. Không bác bỏ H0 chưa đủ để loại biến vĩnh viễn — "
                "biến có logic nghiệp vụ mạnh sẽ được xét lại ở Luồng 2 (Trang 3).")
     with st.expander("Chi tiết p-value theo từng lag"):
-        gp = st.selectbox("Biến", xcols, key="gc_pick")
-        fw, bw = gr_all[gp]
-        a, b = st.columns(2)
-        a.markdown(f"**{gp} → {target}**")
-        a.dataframe(fw, width="stretch", hide_index=True)
-        b.markdown(f"**{target} → {gp}**")
-        b.dataframe(bw, width="stretch", hide_index=True)
+        if xcols:
+            gp = st.selectbox("Biến", xcols, key="gc_pick")
+            if gp and gp in gr_all:
+                fw, bw = gr_all[gp]
+                a, b = st.columns(2)
+                a.markdown(f"**{gp} → {target}**")
+                a.dataframe(fw, width="stretch", hide_index=True)
+                b.markdown(f"**{target} → {gp}**")
+                b.dataframe(bw, width="stretch", hide_index=True)
 
     st.subheader("Đồng liên kết Johansen & quyết định VAR / VECM")
     vecm_hint, johansen_r, base_model, rank_sys = False, {}, "VAR", 0
@@ -184,8 +191,9 @@ with tab3:
                 st.caption("Chưa có biến nào qua Granger → quyết định dựa trên kết quả theo cặp.")
             vecm_hint = rank_sys > 0
             base_model = "VECM" if vecm_hint else "VAR"
-        except ImportError:
-            st.error("Thiếu thư viện `statsmodels` — chạy `pip install statsmodels` để dùng Johansen.")
+        except Exception as e:
+            st.warning(f"Không thể thực hiện kiểm định Johansen ({e}) — sử dụng mô hình cơ sở là VAR.")
+            base_model, rank_sys, vecm_hint, johansen_r = "VAR", 0, False, {}
     (st.warning if base_model == "VECM" else st.success)(
         f"Quyết định động: mô hình cơ sở = **{base_model}**"
         + (" (có đồng liên kết, r > 0 → hiệu chỉnh sai số/ECT)." if base_model == "VECM" else " trên sai phân (r = 0)."))
@@ -197,9 +205,12 @@ with tab3:
 def run_granger_panel(clean: pd.DataFrame, date_col_: str, entity_col_: str, target_: str, xcols_: list, d_: int,
                       train_end_, max_lag_: int, alpha_: float) -> pd.DataFrame:
     rows = {}
+    te = pd.Timestamp(train_end_)
     for e, g in clean.groupby(entity_col_, observed=True, sort=False):
-        f = difference(g.set_index(date_col_).sort_index()[[target_] + xcols_], d_)
-        f = f[f.index <= train_end_]
+        g_indexed = g.set_index(date_col_).sort_index()
+        f = difference(g_indexed[[target_] + xcols_], d_)
+        is_tr = pd.to_datetime(f.index) <= te
+        f = f[is_tr]
         rows[str(e)] = {c: summarize_granger(granger_hc1(f[target_].to_numpy(), f[c].to_numpy(), max_lag_), alpha_)["pass"]
                         for c in xcols_}
     return pd.DataFrame(rows)
@@ -211,9 +222,11 @@ panel = st.session_state["df_clean_panel"]
 pm = st.session_state["panel_meta"]
 gp = run_granger_panel(panel, pm["date_col"], pm["entity_col"], target, xcols, int(d), st.session_state["train_end"],
                        int(max_lag_gc), alpha)
-cons = gp.sum(axis=1)
+cons = gp.sum(axis=1) if len(gp) else pd.Series(0, index=xcols)
 cons_view = gp.replace({True: "✅", False: "–"})
-cons_view.insert(0, "Số tỉnh đạt", cons.astype(int).astype(str) + f"/{gp.shape[1]}")
+n_p = gp.shape[1] if gp.shape[1] else 1
+if gp.shape[1] > 0:
+    cons_view.insert(0, "Số tỉnh đạt", cons.astype(int).astype(str) + f"/{n_p}")
 st.dataframe(cons_view, width="stretch")
 
 # =============================================================================== BẰNG CHỨNG
@@ -221,14 +234,14 @@ st.divider()
 st.subheader("Bằng chứng tuyến tính (tự động lưu cho Trang 4)")
 ev = pd.DataFrame({
     "Biến": xcols,
-    "Trễ CCF": ccf_tab["Lag dẫn trước tốt nhất"].to_numpy(),
-    "CCF đạt": ccf_tab["CCF đạt"].to_numpy(),
-    "p Granger (Bonferroni)": gr_tab["p Bonferroni"].to_numpy(),
-    "Granger đạt": gr_tab["Granger đạt"].to_numpy(),
-    "Phản hồi 2 chiều": gr_tab["Phản hồi 2 chiều"].to_numpy(),
+    "Trễ CCF": ccf_tab["Lag dẫn trước tốt nhất"].to_numpy() if "Lag dẫn trước tốt nhất" in ccf_tab else np.nan,
+    "CCF đạt": ccf_tab["CCF đạt"].to_numpy() if "CCF đạt" in ccf_tab else False,
+    "p Granger (Bonferroni)": gr_tab["p Bonferroni"].to_numpy() if "p Bonferroni" in gr_tab else np.nan,
+    "Granger đạt": gr_tab["Granger đạt"].to_numpy() if "Granger đạt" in gr_tab else False,
+    "Phản hồi 2 chiều": gr_tab["Phản hồi 2 chiều"].to_numpy() if "Phản hồi 2 chiều" in gr_tab else False,
     "r Johansen": [johansen_r.get(c, np.nan) for c in xcols],
-    "Số tỉnh Granger đạt": cons.reindex(xcols).to_numpy(),
-    "Tổng số tỉnh": gp.shape[1],
+    "Số tỉnh Granger đạt": cons.reindex(xcols).fillna(0).astype(int).to_numpy(),
+    "Tổng số tỉnh": n_p,
 })
 st.session_state["evidence_lin"] = ev
 st.session_state["vecm_hint"] = bool(vecm_hint)

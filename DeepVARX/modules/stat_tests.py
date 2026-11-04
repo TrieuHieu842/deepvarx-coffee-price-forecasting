@@ -127,14 +127,25 @@ def adf_kpss(s, alpha: float = 0.05) -> dict:
     from statsmodels.tsa.stattools import adfuller, kpss
 
     s = pd.Series(s).dropna().astype(float)
-    if len(s) < 30 or s.std() == 0:
-        return {"adf_p": np.nan, "kpss_p": np.nan, "stationary": False, "verdict": "Không đủ dữ liệu/hằng số"}
-    adf_p = float(adfuller(s, autolag="AIC")[1])
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        kpss_p = float(kpss(s, regression="c", nlags="auto")[1])
-    adf_ok, kpss_ok = adf_p < alpha, kpss_p >= alpha
-    if adf_ok and kpss_ok:
+    if len(s) < 30 or np.isclose(float(s.std()), 0.0, atol=1e-6) or s.nunique() <= 1:
+        return {"adf_p": np.nan, "kpss_p": np.nan, "stationary": False, "verdict": "Hằng số/không đủ mẫu"}
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            adf_p = float(adfuller(s, autolag="AIC")[1])
+    except Exception:
+        adf_p = np.nan
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            kpss_p = float(kpss(s, regression="c", nlags="auto")[1])
+    except Exception:
+        kpss_p = np.nan
+    adf_ok = (adf_p == adf_p) and (adf_p < alpha)
+    kpss_ok = (kpss_p == kpss_p) and (kpss_p >= alpha)
+    if adf_p != adf_p and kpss_p != kpss_p:
+        verdict = "Lỗi kiểm định / hằng số"
+    elif adf_ok and kpss_ok:
         verdict = "Dừng"
     elif not adf_ok and not kpss_ok:
         verdict = "Không dừng"
@@ -150,6 +161,8 @@ def integration_order(s, max_d: int = 2, alpha: float = 0.05) -> int:
     for d in range(max_d + 1):
         if d > 0:
             x = x.diff().dropna()
+        if len(x) < 30 or np.isclose(float(x.std()), 0.0, atol=1e-6) or x.nunique() <= 1:
+            return d if fallback is None else fallback
         r = adf_kpss(x, alpha)
         if r["stationary"]:
             return d
@@ -162,21 +175,33 @@ def johansen_rank(data: np.ndarray, det_order: int = 0, k_ar_diff: int = 2) -> d
     """Johansen (Trace & Max-eig). Hạng r = số giả thuyết trace bị bác bỏ liên tiếp ở mức 95%."""
     from statsmodels.tsa.vector_ar.vecm import coint_johansen
 
-    res = coint_johansen(np.asarray(data, float), det_order, k_ar_diff)
-    r = 0
-    for i in range(len(res.lr1)):
-        if res.lr1[i] > res.cvt[i, 1]:
-            r += 1
-        else:
-            break
-    rm = 0
-    for i in range(len(res.lr2)):
-        if res.lr2[i] > res.cvm[i, 1]:
-            rm += 1
-        else:
-            break
-    return {"rank_trace": r, "rank_maxeig": rm, "trace": res.lr1.tolist(), "trace_crit95": res.cvt[:, 1].tolist(),
-            "maxeig": res.lr2.tolist(), "maxeig_crit95": res.cvm[:, 1].tolist()}
+    try:
+        data = np.asarray(data, float)
+        if len(data) < 20 or np.any(np.isclose(data.std(axis=0), 0.0, atol=1e-6)):
+            return {"rank_trace": 0, "rank_maxeig": 0, "trace": [0.0], "trace_crit95": [0.0],
+                    "maxeig": [0.0], "maxeig_crit95": [0.0]}
+        res = coint_johansen(data, det_order, k_ar_diff)
+        lr1 = np.real(res.lr1)
+        lr2 = np.real(res.lr2)
+        cvt = np.real(res.cvt)
+        cvm = np.real(res.cvm)
+        r = 0
+        for i in range(len(lr1)):
+            if lr1[i] > cvt[i, 1]:
+                r += 1
+            else:
+                break
+        rm = 0
+        for i in range(len(lr2)):
+            if lr2[i] > cvm[i, 1]:
+                rm += 1
+            else:
+                break
+        return {"rank_trace": r, "rank_maxeig": rm, "trace": lr1.tolist(), "trace_crit95": cvt[:, 1].tolist(),
+                "maxeig": lr2.tolist(), "maxeig_crit95": cvm[:, 1].tolist()}
+    except Exception:
+        return {"rank_trace": 0, "rank_maxeig": 0, "trace": [0.0], "trace_crit95": [0.0],
+                "maxeig": [0.0], "maxeig_crit95": [0.0]}
 
 
 def bds_residuals(resid: np.ndarray, max_dim: int = 5) -> pd.DataFrame:
@@ -241,9 +266,16 @@ def johansen_beta(levels: np.ndarray, r: int, k_ar_diff: int = 2, det_order: int
     """Vector đồng liên kết β (chuẩn hoá hệ số của biến đầu tiên = 1), shape (n_vars, r)."""
     from statsmodels.tsa.vector_ar.vecm import coint_johansen
 
-    res = coint_johansen(np.asarray(levels, float), det_order, k_ar_diff)
-    b = res.evec[:, :r]
-    return b / b[0:1, :]
+    try:
+        levels = np.asarray(levels, float)
+        res = coint_johansen(levels, det_order, k_ar_diff)
+        b = np.real(res.evec[:, :r])
+        norm = b[0:1, :]
+        norm[np.isclose(norm, 0.0)] = 1.0
+        return b / norm
+    except Exception:
+        n_vars = levels.shape[1] if hasattr(levels, "shape") and len(levels.shape) > 1 else 1
+        return np.ones((n_vars, max(1, r)))
 
 
 def dm_from_loss_diff(d: np.ndarray, h: int = 1) -> dict:

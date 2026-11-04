@@ -7,7 +7,7 @@ from modules.data_utils import INTERP_METHODS, numeric_columns
 from modules.feature_selection import high_corr_pairs, suggest_multicollinearity_drops, vif_table
 from modules.panel_data import (build_passport, detect_columns, entity_frame, find_default_file, fingerprint,
                                 make_demo_panel, normalize_panel, panel_diff_train_z, panel_gap_report,
-                                panel_interpolate, panel_zero_diff, read_table, train_end_from_ratio, validate_panel, proxy_table, balanced_panel_diff_train)
+                                panel_interpolate, panel_zero_diff, read_table, train_end_from_ratio, validate_panel, proxy_table)
 from modules.ui import reset_downstream, setup_page, step_box
 
 setup_page("1 · Tải dữ liệu & Làm sạch")

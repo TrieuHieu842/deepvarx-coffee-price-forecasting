@@ -18,7 +18,7 @@ from modules.data_utils import DATA_PROC, DATA_RAW, ROOT, interpolate_train_safe
 ENTITY_HINTS = ["province", "provinces", "tinh", "tỉnh", "region", "vung", "vùng", "dia_phuong", "địa phương", "city",
                 "market", "thị trường"]
 DATE_HINTS = ["date", "ngay", "ngày", "datetime", "timestamp", "time", "month", "thang", "tháng"]
-DEFAULT_NAMES = ["coffee_price_cleaned.csv"]
+DEFAULT_NAMES = ["coffee_price_cleaned.csv", "coffee-data.xlsx"]
 
 
 # ----------------------------------------------------------------------------- đọc file
@@ -296,6 +296,23 @@ def panel_diff_train_z(df, date_col, entity_col, cols, train_end):
         if len(d) > 1:
             parts.append(((d - d.mean()) / d.std(ddof=0).replace(0, np.nan)).fillna(0))
     return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=cols)
+
+
+def panel_diff_train(df: pd.DataFrame, date_col: str, entity_col: str, cols: list[str], train_end, d: int = 1) -> pd.DataFrame:
+    """Sai phân bậc d trong từng tỉnh (đoạn TRAIN) rồi xếp chồng để tính VIF."""
+    parts = []
+    for _, g in df.groupby(entity_col, observed=True, sort=False):
+        g = g[g[date_col] <= train_end].sort_values(date_col)
+        sub = g[cols].astype(float)
+        for _ in range(max(1, int(d))):
+            sub = sub.diff()
+        sub = sub.dropna()
+        if len(sub) > 0:
+            parts.append(sub)
+    return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=cols)
+
+
+balanced_panel_diff_train = panel_diff_train
 
 def entity_frame(master: pd.DataFrame, date_col: str, entity_col: str, entity: str,
                  cols: list[str] | None = None) -> pd.DataFrame:
