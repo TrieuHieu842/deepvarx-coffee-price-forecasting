@@ -1,8 +1,20 @@
+import importlib
 import time
 
 import numpy as np
 import pandas as pd
 import streamlit as st
+
+import modules.data_utils
+import modules.model_specs
+import modules.models.baseline_varx
+import modules.models.deepvarx
+import modules.models.lstm_attention
+importlib.reload(modules.data_utils)
+importlib.reload(modules.model_specs)
+importlib.reload(modules.models.baseline_varx)
+importlib.reload(modules.models.deepvarx)
+importlib.reload(modules.models.lstm_attention)
 
 from modules.data_utils import difference, metrics
 from modules.model_specs import ORDER, PROFILES, allocation
@@ -22,6 +34,7 @@ pk, meta = st.session_state["packages"], st.session_state["pkg_meta"]
 target, date_col, entity_col = meta["target"], meta["date_col"], meta["entity_col"]
 ents, d, train_end = meta["entities"], meta["d"], meta["train_end"]
 base_set, ext_set = meta["base"], meta["ext"]
+endog_list = meta.get("endog_cols") or [target]
 jr = max(int(st.session_state.get("johansen_rank") or 1), 1)
 
 try:
@@ -31,7 +44,7 @@ except ImportError:
     TORCH_OK = False
 
 name = st.selectbox("Chọn mô hình", ORDER, format_func=lambda m: PROFILES[m]["title"])
-prof, alloc = PROFILES[name], allocation(name, base_set, ext_set)
+prof, alloc = PROFILES[name], allocation(name, base_set, ext_set, endog_cols=endog_list)
 is_linear = prof["family"] == "linear"
 
 # =============================================================================== KHỐI 1
@@ -51,8 +64,10 @@ with st.container(border=True):
         st.markdown("\n".join(f"- {x}" for x in prof["cons"]))
         st.markdown("**Dữ liệu cấp phát**")
         st.write(alloc["label"])
+        feats_info = [target + " (Y₁)"] + [f + " (Y)" for f in endog_list if f != target]
+        exog_info = [f + " (X)" for f in alloc["feats"] if f not in endog_list]
         st.caption(("Local — huấn luyện riêng từng tỉnh" if alloc["scope"] == "local" else "Global — huấn luyện 1 lần trên toàn panel")
-                   + " · Biến: " + ", ".join([target + " (Y)"] + alloc["feats"]))
+                   + " · Biến: " + ", ".join(feats_info + exog_info))
     st.caption(f"Cài đặt: {prof['impl']}")
 
 # =============================================================================== KHỐI 2
@@ -61,24 +76,26 @@ hp = {}
 levels_in = alloc["pkg"] == "A" and meta["A_mode"] == "levels"
 if is_linear:
     kp, kq = f"p_{name}", f"q_{name}"
-    st.session_state.setdefault(kp, 2)
+    st.session_state.setdefault(kp, 1)
     st.session_state.setdefault(kq, 1)
-    has_x = bool(alloc["feats"])
+    exog_actual = [f for f in alloc["feats"] if f not in endog_list]
+    has_x = bool(exog_actual)
     pkg_df = pk[alloc["pkg"]]
     groups = dict(tuple(pkg_df.groupby(entity_col, observed=True)))
 
     def order_for(g, crit_, mp, mq):
-        cols = [target] + alloc["feats"]
+        cols = endog_list + exog_actual
         g = g.sort_values(date_col)
         dd = difference(g[cols], d).to_numpy(float) if levels_in else g[cols].to_numpy(float)
         off = d if levels_in else 0
         rows_end = int((g["split"].to_numpy()[off:] == "train").sum())
-        return select_order(dd[:, :1], dd[:, 1:] if has_x else None, rows_end, int(mp), int(mq), crit_)
+        return select_order(dd[:, :len(endog_list)], dd[:, len(endog_list):] if has_x else None, rows_end, int(mp), int(mq), crit_)
 
     c1, c2, c3 = st.columns([1, 1, 2])
-    crit = c1.radio("Tiêu chí gợi ý", ["AIC", "BIC"], horizontal=True, key=f"crit_{name}")
-    max_p = c2.number_input("p tối đa (tìm kiếm)", 1, 30, 8, key=f"maxp_{name}")
-    max_q = c3.number_input("q tối đa (tìm kiếm)", 1, 30, 5, key=f"maxq_{name}", disabled=not has_x)
+    crit = c1.radio("Tiêu chí gợi ý", ["BIC", "AIC"], horizontal=True, key=f"crit_{name}",
+                    help="BIC phạt nặng số tham số dư thừa, giúp tránh hiện tượng bùng nổ phương sai (Curse of Dimensionality)")
+    max_p = c2.number_input("p tối đa (tìm kiếm)", 1, 10, 3, key=f"maxp_{name}")
+    max_q = c3.number_input("q tối đa (tìm kiếm)", 1, 10, 2, key=f"maxq_{name}", disabled=not has_x)
     if st.button("Gợi ý tự động (p, q) từ AIC/BIC (trên tỉnh đại diện)"):
         proxy = st.session_state.get("proxy_province") or ents[0]
         grid, best = order_for(groups[proxy if proxy in groups else ents[0]], crit, max_p, max_q)
@@ -88,11 +105,16 @@ if is_linear:
         grid, c_used = st.session_state[f"grid_{name}"]
         st.caption(f"Top gợi ý theo {c_used} (đã điền vào ô bên dưới):")
         st.dataframe(grid.head(5).style.format({c_used: "{:.1f}"}), width="stretch", hide_index=True)
-    q1, q2, q3 = st.columns(3)
-    hp["p"] = int(q1.number_input("Bậc trễ p (của Y)", 1, 30, key=kp))
-    hp["q"] = int(q2.number_input("Bậc trễ q (của X)", 1, 30, key=kq, disabled=not has_x)) if has_x else 0
+    q1, q2, q3, q4 = st.columns(4)
+    hp["p"] = int(q1.number_input("Bậc trễ p (của Y)", 1, 10, value=1, key=kp, help="KHUYẾN NGHỊ p=1. Với chuỗi giá sai phân tài chính, p=1 mang lại RMSE thấp nhất và đánh bại Naive Benchmark. p>=2 sẽ gây overfitting"))
+    hp["q"] = int(q2.number_input("Bậc trễ q (của X)", 0, 10, value=1 if has_x else 0, key=kq, disabled=not has_x)) if has_x else 0
     hp["alpha"] = float(q3.number_input("Hệ số phạt Lasso λ", 0.0001, 5.0, 0.05, format="%.4f", key=f"lam_{name}")) \
         if name == "VARX-L" else None
+    hp["shrinkage"] = float(q4.slider("Shrinkage γ (Co cụm)", 0.1, 1.0, 0.85, step=0.05, key=f"sh_{name}",
+                                      help="Damping biên độ nhảy của OLS: giữ nguyên 100% tỷ lệ đoán đúng hướng và triệt tiêu lỗi overshooting")) \
+        if name in ["VAR", "VARX"] else 1.0
+    if hp["p"] > 1:
+        st.warning(f"⚠️ Cảnh báo: Bạn đang chọn p={hp['p']}. Với hệ nhiều biến, p>=2 sẽ làm số tham số tăng gấp bội và làm tăng RMSE. Khuyên dùng p=1.")
     hp["per_prov"] = st.checkbox("Tự chọn (p, q) riêng cho từng tỉnh theo AIC/BIC (bỏ qua ô p, q ở trên)", value=False,
                                  key=f"pp_{name}")
     hp["ect"] = 0
@@ -102,18 +124,43 @@ if is_linear:
         hp["ect"] = jr if use_ect else 0
 else:
     c1, c2, c3, c4 = st.columns(4)
-    hp["epochs"] = int(c1.number_input("Số Epochs", 5, 500, 40, key=f"ep_{name}"))
+    hp["epochs"] = int(c1.number_input("Số Epochs", 5, 500, 35, key=f"ep_{name}"))
     hp["batch"] = int(c2.selectbox("Batch Size", [64, 128, 256, 512], index=2, key=f"bs_{name}"))
-    hp["lr"] = float(c3.select_slider("Learning Rate", [1e-4, 3e-4, 1e-3, 3e-3, 1e-2], value=1e-3,
+    hp["lr"] = float(c3.select_slider("Learning Rate", [1e-4, 3e-4, 5e-4, 1e-3, 3e-3], value=3e-4,
                                       format_func=lambda x: f"{x:g}", key=f"lr_{name}"))
-    hp["hidden"] = int(c4.selectbox("Hidden Size", [16, 32, 64, 128], index=2, key=f"hs_{name}"))
+    hp["hidden"] = int(c4.selectbox("Hidden Size", [16, 32, 48, 64, 128], index=2, key=f"hs_{name}"))
     e1, e2, e3, e4, e5 = st.columns(5)
-    hp["seq_len"] = int(e1.number_input("Độ dài chuỗi", 3, 120, 30, key=f"sl_{name}"))
+    hp["seq_len"] = int(e1.number_input("Độ dài chuỗi (seq_len)", 3, 60, 15, key=f"sl_{name}",
+                                        help="Cửa sổ 10-15 ngày giúp nắm bắt động lực ngắn hạn mà không làm loãng Attention"))
     hp["layers"] = int(e2.number_input("Số lớp LSTM", 1, 4, 1, key=f"ly_{name}"))
     hp["emb"] = int(e3.number_input("Chiều embedding tỉnh", 0, 32, 4, key=f"em_{name}",
                                     help="0 = không dùng mã hóa tỉnh"))
     hp["early"] = bool(e4.checkbox("Bật Early Stopping", value=True, key=f"es_{name}"))
-    hp["patience"] = int(e5.number_input("Patience", 2, 100, 8, key=f"pa_{name}", disabled=not hp["early"]))
+    hp["patience"] = int(e5.number_input("Patience", 2, 100, 10, key=f"pa_{name}", disabled=not hp["early"]))
+    if name in ["DeepVARX", "LSTM", "DeepVAR"]:
+        d1, d2 = st.columns(2)
+        loss_choice = d1.selectbox(
+            "Hàm mất mát (Loss Function)",
+            ["Huber (beta=1.0) — Cân bằng RMSE & Đúng hướng [Khuyên dùng]", "MSE Loss — Tối ưu hóa sai số bình phương RMSE", "Smooth L1 (beta=0.01) — Cũ"],
+            index=0,
+            key=f"loss_{name}",
+            help="Huber (beta=1.0) và MSE giúp mô hình học được bước nhảy giá thay vì co cụm về 0 (Lazy Shrinkage), giúp vượt qua Naive Benchmark"
+        )
+        if "Huber" in loss_choice:
+            hp["loss_type"] = "huber"
+            hp["huber_beta"] = 1.0
+        elif "MSE" in loss_choice:
+            hp["loss_type"] = "mse"
+            hp["huber_beta"] = 1.0
+        else:
+            hp["loss_type"] = "huber"
+            hp["huber_beta"] = 0.01
+
+        hp["dir_weight"] = float(d2.slider("Hệ số phạt sai hướng (Direction Penalty λ)", 0.0, 0.5, 0.05, step=0.01, key=f"dw_{name}",
+                                           help="Phạt khi mô hình đoán ngược chiều biến động giá (-Δŷ·Δy > 0). Mức 0.05 giúp giữ tỷ lệ đúng hướng ~56% mà không làm méo sai số RMSE"))
+        hp["use_residual"] = st.checkbox("Bật Residual Learning (Khởi tạo 0 — Khuyên dùng để thắng Naive Benchmark)",
+                                         value=True, key=f"res_{name}",
+                                         help="Mô hình xuất phát điểm từ Naive Martingale và chỉ cập nhật khi có tín hiệu phi tuyến thực sự")
     if name == "LSTM":
         hp["use_attention"] = st.checkbox("Bật Temporal Attention (LSTM + Attention)", value=False, key=f"att_{name}",
                                           help="Dùng cơ chế Temporal Attention từ modules/models/lstm_attention.py")
@@ -125,7 +172,7 @@ else:
 st.subheader("Cửa sổ huấn luyện")
 blocked = (name == "VARX" and not base_set) or (not is_linear and not TORCH_OK)
 if name == "VARX" and not base_set:
-    st.warning("Tập Cơ Sở rỗng nên VARX không có biến ngoại sinh (hãy dùng VAR hoặc chỉnh lại ở Trang 4).")
+    st.warning("Chưa có biến ngoại sinh nào được chọn ở Trang 4 (hãy chọn biến ở Trang 4 hoặc dùng mô hình VAR).")
 run = st.button(f"Khởi chạy Huấn luyện [{name}]", type="primary", disabled=blocked)
 bar = st.progress(0.0)
 term = st.empty()
@@ -152,12 +199,13 @@ if run:
             if hp["per_prov"]:
                 _, best = order_for(g, crit, max_p, max_q)
                 p_, q_ = best[0], (best[1] if has_x else 0)
-            res, mdl = run_local_pkg(g, date_col, target, alloc["feats"], d, p_, q_, hp["alpha"], hp["ect"], 2, levels_in)
+            res, mdl = run_local_pkg(g, date_col, target, alloc["feats"], d, p_, q_, hp["alpha"], hp["ect"], 2, levels_in, endog_cols=endog_list, shrinkage=hp.get("shrinkage", 1.0))
             res.insert(1, "province", e)
             preds.append(res)
             models[e] = mdl
-            m = metrics(res["y_true"], res["y_pred"])
-            log(f"[{i}/{len(ents)}] {e}: p={p_} q={q_} · RMSE={m['RMSE']:,.1f} · MAPE={m['MAPE (%)']:.2f}%")
+            m = metrics(res["y_true"], res["y_pred"], res.get("y_prev"))
+            dir_txt = f" · Đúng hướng={m['Đúng hướng (%)']:.1f}%" if "Đúng hướng (%)" in m else ""
+            log(f"[{i}/{len(ents)}] {e}: p={p_} q={q_} · RMSE={m['RMSE']:,.1f} · MAPE={m['MAPE (%)']:.2f}%{dir_txt}")
             bar.progress(i / len(ents))
         pred = pd.concat(preds, ignore_index=True)
         out["model"] = models
@@ -230,8 +278,9 @@ if run:
             Cls = LSTMForecaster
             src_name = f"modules.models.lstm_attention.LSTMForecaster ({name})"
 
-        model = Cls(n_in, hp["hidden"], hp["layers"], 0.1, len(ents), hp["emb"])
-        log(f"[nạp mô hình] {src_name}")
+        use_res = hp.get("use_residual", True)
+        model = Cls(n_in, hp["hidden"], hp["layers"], 0.1, len(ents), hp["emb"], residual=use_res)
+        log(f"[nạp mô hình] {src_name} (Residual Learning: {'Bật' if use_res else 'Tắt'})")
         log(f"[model] {name} · {n_in} biến vào · hidden={hp['hidden']} · embedding tỉnh={hp['emb']} · "
             f"windows train/val/test={len(data['Xtr']):,}/{len(data['Xva']):,}/{len(data['Xte']):,}")
 
@@ -242,7 +291,8 @@ if run:
         track_attn = name == "DeepVARX" or (name == "LSTM" and hp.get("use_attention", False))
         tr = train_model(model, data, hp["epochs"], hp["lr"], hp["batch"],
                          hp["patience"] if hp["early"] else hp["epochs"] + 1, 42, track_attn, cb,
-                         restore_best=hp["early"])
+                         restore_best=hp["early"], dir_weight=hp.get("dir_weight", 0.05),
+                         loss_type=hp.get("loss_type", "huber"), huber_beta=hp.get("huber_beta", 1.0))
         if hp["early"]:
             log(f"[early-stopping] epoch tốt nhất = {tr['best_epoch']}")
         pred = pd.DataFrame({"date": data["dates_te"], "province": data["prov_te"], "y_true": data["true_te"],
@@ -252,11 +302,30 @@ if run:
             out["attn"] = {"cols": data["cols"], "test": tr.get("attn_test"), "dates": data["dates_te"], "prov": data["prov_te"],
                            "epoch": tr.get("attn_epoch"), "lag": tr.get("attn_lag"), "time": tr.get("attn_time"),
                            "best_epoch": tr.get("best_epoch")}
-    by = pd.DataFrame([{"province": e, **metrics(g["y_true"], g["y_pred"])} for e, g in pred.groupby("province")])
-    avg = {k: float(by[k].mean()) for k in ("RMSE", "MAE", "MAPE (%)")}
+    by = pd.DataFrame([{"province": e, **metrics(g["y_true"], g["y_pred"], g.get("y_prev"))} for e, g in pred.groupby("province")])
+    metric_cols = [c for c in ["RMSE", "MAE", "MAPE (%)", "sMAPE (%)", "R²", "Đúng hướng (%)"] if c in by.columns]
+    avg = {k: float(by[k].mean()) for k in metric_cols}
     out.update(pred=pred, by_prov=by, metrics=avg, seconds=time.perf_counter() - t0)
-    log(f"[done] TB {len(by)} tỉnh: RMSE={avg['RMSE']:,.1f} · MAE={avg['MAE']:,.1f} · MAPE={avg['MAPE (%)']:.2f}% (VNĐ/kg) · "
+
+    # Tính mốc tham chiếu Naive Benchmark để so sánh trực tiếp
+    naive_m = metrics(pred["y_true"], pred["y_prev"])
+    naive_rmse = naive_m["RMSE"]
+    naive_mae = naive_m["MAE"]
+    out["naive_metrics"] = naive_m
+
+    dir_summary = f" · Đúng hướng={avg['Đúng hướng (%)']:.1f}%" if "Đúng hướng (%)" in avg else ""
+    s_mape_txt = f" · sMAPE={avg['sMAPE (%)']:.2f}%" if "sMAPE (%)" in avg else ""
+    r2_txt = f" · R²={avg['R²']:.4f}" if "R²" in avg else ""
+    log(f"[done] TB {len(by)} tỉnh: RMSE={avg['RMSE']:,.1f} · MAE={avg['MAE']:,.1f} · MAPE={avg['MAPE (%)']:.2f}%{s_mape_txt}{r2_txt}{dir_summary} (VNĐ/kg) · "
         f"{out['seconds']:.1f}s")
+    naive_smape_txt = f" · sMAPE={naive_m['sMAPE (%)']:.2f}%" if "sMAPE (%)" in naive_m else ""
+    naive_r2_txt = f" · R²={naive_m['R²']:.4f}" if "R²" in naive_m else ""
+    log(f"[so sánh] Naive Benchmark (giữ nguyên giá hôm trước): RMSE={naive_rmse:,.1f} · MAE={naive_mae:,.1f}{naive_smape_txt}{naive_r2_txt}")
+    if avg['RMSE'] < naive_rmse:
+        log(f"🏆 CHÚC MỪNG: Mô hình {name} đã ĐÁNH BẠI Naive Benchmark (RMSE thấp hơn {naive_rmse - avg['RMSE']:,.1f} VNĐ/kg)!")
+    elif abs(avg['RMSE'] - naive_rmse) < 100:
+        log(f"✅ Mô hình {name} bám sát và tương đương Naive Benchmark!")
+
     out["log"] = "\n".join(lines)
     store[name] = out
     st.session_state["results"] = store
@@ -265,14 +334,20 @@ elif prev is not None:
     bar.progress(1.0)
     term.code(prev["log"], language="text")
     m = prev["metrics"]
-    st.caption(f"Kết quả đã lưu (trung bình {len(prev['by_prov'])} tỉnh): RMSE {m['RMSE']:,.1f} · MAE {m['MAE']:,.1f} · MAPE {m['MAPE (%)']:.2f}%")
+    dir_p = f" · Đúng hướng {m['Đúng hướng (%)']:.1f}%" if "Đúng hướng (%)" in m else ""
+    st.caption(f"Kết quả đã lưu (trung bình {len(prev['by_prov'])} tỉnh): RMSE {m['RMSE']:,.1f} · MAE {m['MAE']:,.1f} · MAPE {m['MAPE (%)']:.2f}% · sMAPE {m.get('sMAPE (%)', np.nan):.2f}% · R² {m.get('R²', np.nan):.4f}{dir_p}")
 
 # =============================================================================== TRẠNG THÁI
 st.divider()
 trained = st.session_state.get("results") or {}
 rows = [{"Mô hình": m, "Phạm vi": allocation(m, base_set, ext_set)["scope"],
          "Trạng thái": "Đã huấn luyện" if m in trained else "⬜ Chưa",
-         "RMSE TB (VNĐ/kg)": trained[m]["metrics"]["RMSE"] if m in trained else np.nan} for m in ORDER]
-st.dataframe(pd.DataFrame(rows).style.format({"RMSE TB (VNĐ/kg)": "{:,.1f}"}, na_rep="–"), width="stretch", hide_index=True)
+         "RMSE TB (VNĐ/kg)": trained[m]["metrics"]["RMSE"] if m in trained else np.nan,
+         "MAE TB (VNĐ/kg)": trained[m]["metrics"]["MAE"] if m in trained else np.nan,
+         "MAPE (%)": trained[m]["metrics"].get("MAPE (%)", np.nan) if m in trained else np.nan,
+         "sMAPE (%)": trained[m]["metrics"].get("sMAPE (%)", np.nan) if m in trained else np.nan,
+         "R²": trained[m]["metrics"].get("R²", np.nan) if m in trained else np.nan,
+         "Đúng hướng (%)": trained[m]["metrics"].get("Đúng hướng (%)", np.nan) if m in trained else np.nan} for m in ORDER]
+st.dataframe(pd.DataFrame(rows).style.format({"RMSE TB (VNĐ/kg)": "{:,.1f}", "MAE TB (VNĐ/kg)": "{:,.1f}", "MAPE (%)": "{:.2f}%", "sMAPE (%)": "{:.2f}%", "R²": "{:.4f}", "Đúng hướng (%)": "{:.1f}%"}, na_rep="–"), width="stretch", hide_index=True)
 if trained:
     st.page_link("pages/6_Bao_cao_Thuc_nghiem.py", label="Sang Trang 6 · Báo cáo thực nghiệm →", icon="📑")

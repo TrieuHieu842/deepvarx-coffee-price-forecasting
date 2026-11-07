@@ -79,7 +79,8 @@ with tab1:
     show = stn.copy()
     for col in ["ADF p (d=0)", "KPSS p (d=0)", "ADF p (d=1)", "KPSS p (d=1)"]:
         show[col] = show[col].map(fmt_p)
-    show.insert(1, "Vai trò", ["Y" if b == target else "X" for b in show["Biến"]])
+    planned_endog_set = {"coffee_price_vn", "coffee_price_london_vnd", "coffee_price_arabica_vnd"}
+    show.insert(1, "Vai trò", [("Y₁ (Mục tiêu)" if b == target else ("Y (Nội sinh)" if b in planned_endog_set else "X")) for b in show["Biến"]])
     st.dataframe(show, width="stretch", hide_index=True)
 
     valid_d = stn["d đề xuất"].dropna()
@@ -136,18 +137,25 @@ with tab2:
 
 # =============================================================================== TAB 3
 with tab3:
-    step_box("<b>Granger</b>: Wald F-test với sai số chuẩn <b>HC1</b>, p-value hiệu chỉnh <b>Bonferroni</b> theo số lag. "
-             "Cũng kiểm tra chiều ngược Y→X để phát hiện <b>phản hồi hai chiều</b>. <b>Johansen</b> xác định có "
-             "dùng VECM hay không.")
+    step_box("<b>Granger</b>: Wald F-test với sai số chuẩn <b>HC1</b>. Cho phép chọn giữa <b>p thô &lt; α</b> (tiêu chuẩn nghiên cứu thực nghiệm, "
+             "tránh bỏ sót biến do hiệu chỉnh quá khắt khe) hoặc <b>Bonferroni</b> (nghiêm ngặt). <b>Johansen</b> xác định có dùng VECM hay không.")
     gr_tab, gr_all = run_granger(dtr, target, xcols, int(max_lag_gc), alpha)
+    
+    c_gr1, c_gr2 = st.columns([3, 1])
+    gr_criterion = c_gr1.radio("Tiêu chí kết luận Granger đạt",
+                              ["p thô < α (Khuyên dùng — tránh bỏ sót biến quan trọng)",
+                               "p Bonferroni < α (Nghiêm ngặt)"],
+                              horizontal=True, index=0)
+    use_raw_gr = gr_criterion.startswith("p thô")
+    gr_pass_mask = (gr_tab["p thô"] < alpha) if use_raw_gr else gr_tab["Granger đạt"]
+    
     gv = gr_tab.copy()
-    gv["Granger đạt"] = np.where(gv["Granger đạt"], "✅", "–")
+    gv["Granger đạt"] = np.where(gr_pass_mask, "✅", "–")
     gv["Phản hồi 2 chiều"] = np.where(gv["Phản hồi 2 chiều"], "⚠️ Có", "–")
     for col in ["p thô", "p Bonferroni", "p Bonf. (Y→X)"]:
         gv[col] = gv[col].map(fmt_p)
     st.dataframe(gv.style.format({"F": "{:.2f}"}), width="stretch", hide_index=True)
-    st.caption("Lưu ý: Granger chỉ đo quan hệ dự báo **tuyến tính**. Không bác bỏ H0 chưa đủ để loại biến vĩnh viễn — "
-               "biến có logic nghiệp vụ mạnh sẽ được xét lại ở Luồng 2 (Trang 3).")
+    st.caption("Lưu ý: Granger đo quan hệ dự báo tuyến tính. Tiêu chí mặc định **p thô < α** giúp các biến ngoại sinh quan trọng không bị loại sớm trước khi sang Trang 3 & 4.")
     with st.expander("Chi tiết p-value theo từng lag"):
         if xcols:
             gp = st.selectbox("Biến", xcols, key="gc_pick")
@@ -177,7 +185,11 @@ with tab3:
             return pd.DataFrame(pair), system
 
         try:
-            sys_vars = [c for c, ok in zip(xcols, gr_tab["Granger đạt"]) if ok][:6]
+            sys_vars = [c for c, ok in zip(xcols, gr_pass_mask) if ok][:6]
+            if not sys_vars:
+                sys_vars = [c for c, ok in zip(xcols, ccf_tab["CCF đạt"]) if ok][:6]
+            if not sys_vars:
+                sys_vars = xcols[:4]
             jt, system = run_johansen(df.iloc[:train_n], target, xcols, sys_vars, int(k_diff))
             johansen_r = dict(zip(jt["Cặp (Y, X)"], jt["Hạng r (trace)"]))
             st.markdown("**Theo từng cặp (Y, X)**")
@@ -203,7 +215,7 @@ with tab3:
 # =============================================================================== NHẤT QUÁN GIỮA CÁC TỈNH
 @st.cache_data(show_spinner="Đang chạy Granger cho từng tỉnh…")
 def run_granger_panel(clean: pd.DataFrame, date_col_: str, entity_col_: str, target_: str, xcols_: list, d_: int,
-                      train_end_, max_lag_: int, alpha_: float) -> pd.DataFrame:
+                      train_end_, max_lag_: int, alpha_: float, use_raw_: bool = True) -> pd.DataFrame:
     rows = {}
     te = pd.Timestamp(train_end_)
     for e, g in clean.groupby(entity_col_, observed=True, sort=False):
@@ -211,7 +223,8 @@ def run_granger_panel(clean: pd.DataFrame, date_col_: str, entity_col_: str, tar
         f = difference(g_indexed[[target_] + xcols_], d_)
         is_tr = pd.to_datetime(f.index) <= te
         f = f[is_tr]
-        rows[str(e)] = {c: summarize_granger(granger_hc1(f[target_].to_numpy(), f[c].to_numpy(), max_lag_), alpha_)["pass"]
+        rows[str(e)] = {c: bool((summarize_granger(granger_hc1(f[target_].to_numpy(), f[c].to_numpy(), max_lag_), alpha_)["p_raw"] < alpha_) if use_raw_
+                                else summarize_granger(granger_hc1(f[target_].to_numpy(), f[c].to_numpy(), max_lag_), alpha_)["pass"])
                         for c in xcols_}
     return pd.DataFrame(rows)
 
@@ -221,7 +234,7 @@ st.subheader("Nhất quán giữa các tỉnh")
 panel = st.session_state["df_clean_panel"]
 pm = st.session_state["panel_meta"]
 gp = run_granger_panel(panel, pm["date_col"], pm["entity_col"], target, xcols, int(d), st.session_state["train_end"],
-                       int(max_lag_gc), alpha)
+                       int(max_lag_gc), alpha, use_raw_gr)
 cons = gp.sum(axis=1) if len(gp) else pd.Series(0, index=xcols)
 cons_view = gp.replace({True: "✅", False: "–"})
 n_p = gp.shape[1] if gp.shape[1] else 1
@@ -236,8 +249,9 @@ ev = pd.DataFrame({
     "Biến": xcols,
     "Trễ CCF": ccf_tab["Lag dẫn trước tốt nhất"].to_numpy() if "Lag dẫn trước tốt nhất" in ccf_tab else np.nan,
     "CCF đạt": ccf_tab["CCF đạt"].to_numpy() if "CCF đạt" in ccf_tab else False,
+    "p Granger (thô)": gr_tab["p thô"].to_numpy() if "p thô" in gr_tab else np.nan,
     "p Granger (Bonferroni)": gr_tab["p Bonferroni"].to_numpy() if "p Bonferroni" in gr_tab else np.nan,
-    "Granger đạt": gr_tab["Granger đạt"].to_numpy() if "Granger đạt" in gr_tab else False,
+    "Granger đạt": gr_pass_mask.to_numpy(),
     "Phản hồi 2 chiều": gr_tab["Phản hồi 2 chiều"].to_numpy() if "Phản hồi 2 chiều" in gr_tab else False,
     "r Johansen": [johansen_r.get(c, np.nan) for c in xcols],
     "Số tỉnh Granger đạt": cons.reindex(xcols).fillna(0).astype(int).to_numpy(),
@@ -249,6 +263,7 @@ disp = ev.copy()
 for c in ["CCF đạt", "Granger đạt"]:
     disp[c] = np.where(disp[c], "✅", "–")
 disp["Phản hồi 2 chiều"] = np.where(disp["Phản hồi 2 chiều"], "⚠️", "")
+disp["p Granger (thô)"] = disp["p Granger (thô)"].map(fmt_p)
 disp["p Granger (Bonferroni)"] = disp["p Granger (Bonferroni)"].map(fmt_p)
 st.dataframe(disp, width="stretch", hide_index=True)
 st.success(f"Đã lưu bằng chứng cho {len(xcols)} biến (d = {d}, mô hình cơ sở: {st.session_state['base_model']}). "

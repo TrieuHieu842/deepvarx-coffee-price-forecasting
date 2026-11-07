@@ -61,15 +61,18 @@ PROFILES = {
 }
 
 
-def allocation(name: str, base: list[str], ext: list[str]) -> dict:
-    """Dữ liệu cấp phát: gói (A/B/C), tập biến X và phạm vi huấn luyện (Local theo tỉnh / Global toàn panel)."""
+def allocation(name: str, base: list[str], ext: list[str], endog_cols: list[str] | None = None, **kwargs) -> dict:
+    """Dữ liệu cấp phát: tập biến (nội sinh bổ sung + ngoại sinh X) và phạm vi huấn luyện (Local theo tỉnh / Global toàn panel)."""
+    if endog_cols is None and "endog_cols" in kwargs:
+        endog_cols = kwargs["endog_cols"]
+    other_endog = [c for c in endog_cols[1:]] if (endog_cols and len(endog_cols) > 1) else []
     table = {
-        "VAR": ("Gói A — Tập Cơ Sở, chỉ Y", "A", [], "local"),
-        "VARX": ("Gói A — Tập Cơ Sở, Y + X", "A", list(base), "local"),
-        "VARX-L": ("Gói B — Tập Mở Rộng sai phân, Y + X", "B", list(ext), "local"),
-        "LSTM": ("Gói C — Tập Mở Rộng, Y + X (scaled, mã tỉnh)", "C", list(ext), "global"),
-        "DeepVAR": ("Gói C — chỉ Y (scaled, mã tỉnh)", "C", [], "global"),
-        "DeepVARX": ("Gói C — Tập Mở Rộng, Y + X (scaled, mã tỉnh)", "C", list(ext), "global"),
+        "VAR": ("Mô hình đa biến VAR (chỉ dùng hệ biến nội sinh Y)", "A", list(other_endog), "local"),
+        "VARX": ("Mô hình đa biến tuyến tính VARX (Y + X)", "A", list(other_endog + [c for c in base if c not in other_endog]), "local"),
+        "VARX-L": ("Mô hình đa biến tuyến tính có phạt Lasso VARX-L (Y + X)", "B", list(other_endog + [c for c in ext if c not in other_endog]), "local"),
+        "LSTM": ("Mô hình học sâu LSTM (Y + X)", "C", list(other_endog + [c for c in ext if c not in other_endog]), "global"),
+        "DeepVAR": ("Mô hình học sâu DeepVAR (chỉ dùng hệ biến nội sinh Y)", "C", list(other_endog), "global"),
+        "DeepVARX": ("Mô hình học sâu DeepVARX (Y + X)", "C", list(other_endog + [c for c in ext if c not in other_endog]), "global"),
     }
     label, pkg, feats, scope = table[name]
     return {"label": label, "pkg": pkg, "feats": feats, "scope": scope}

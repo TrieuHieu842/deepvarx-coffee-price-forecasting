@@ -88,15 +88,23 @@ def run_varx(df_levels: pd.DataFrame, target: str, exog_cols: list[str], d: int,
 
 def run_local_pkg(g: pd.DataFrame, date_col: str, target: str, feats: list[str], d: int, p: int, q: int,
                   lasso_alpha: float | None = None, ect_rank: int = 0, k_ar_diff: int = 2,
-                  levels_input: bool = False):
+                  levels_input: bool = False, endog_cols: list[str] | None = None,
+                  shrinkage: float = 1.0, **kwargs):
     """Chạy VAR/VARX/VARX-L (hoặc VARX có số hạng hiệu chỉnh sai số - dạng VECM-X khi ect_rank > 0) cho MỘT tỉnh
-    từ gói dữ liệu của tỉnh đó. g: các cột [date, split, y_level, target, feats].
+    từ gói dữ liệu của tỉnh đó. Hỗ trợ hệ biến nội sinh đa biến endog_cols (chuỗi giá cà phê) và ngoại sinh feats.
+    shrinkage: Hệ số co cụm biên độ gamma (0 < gamma <= 1.0) giúp triệt tiêu overshooting trên ngày biến động mạnh.
     Sử dụng VARModel từ var_model.py và VARXModel từ varx_model.py.
     Trả về (DataFrame dự báo mức giá gốc VNĐ/kg, mô hình)."""
+    if endog_cols is None and "endog_cols" in kwargs:
+        endog_cols = kwargs["endog_cols"]
     from modules.stat_tests import johansen_beta
 
     g = g.sort_values(date_col).reset_index(drop=True)
-    cols = [target] + list(feats)
+    endog_names = [c for c in endog_cols if c in g.columns] if endog_cols else [target]
+    if not endog_names:
+        endog_names = [target]
+    exog_names = [c for c in feats if c in g.columns and c not in endog_names]
+    cols = endog_names + exog_names
     levels_input = levels_input or ect_rank > 0
     if levels_input:
         lev = g[cols].to_numpy(float)
@@ -106,22 +114,23 @@ def run_local_pkg(g: pd.DataFrame, date_col: str, target: str, feats: list[str],
 
     split = g["split"].to_numpy()[off:]
     n, rows_end = len(dd), int((split == "train").sum())
-    endog = dd[:, :1]
-    exog = dd[:, 1:] if feats else None
+    endog = dd[:, :len(endog_names)]
+    exog = dd[:, len(endog_names):] if exog_names else None
 
     # Thêm số hạng ECT từ Johansen (nếu có yêu cầu VECM-X)
     if ect_rank > 0:
         beta = johansen_beta(lev[:rows_end + off], ect_rank, k_ar_diff)
         ect = (lev @ beta)[off:]
         exog = ect if exog is None else np.column_stack([exog, ect])
+        exog_names = exog_names + [f"ECT_{r+1}" for r in range(ect.shape[1])]
 
     lvl = g["y_level"].to_numpy(float)
 
     if exog is None or exog.shape[1] == 0:
         # Trường hợp VAR: Gọi trực tiếp VARModel từ modules/models/var_model.py
         mdl = VARModel(lags=p, trend="c")
-        tr_df = pd.DataFrame(endog[:rows_end], columns=[target])
-        te_df = pd.DataFrame(endog[rows_end:], columns=[target])
+        tr_df = pd.DataFrame(endog[:rows_end], columns=endog_names)
+        te_df = pd.DataFrame(endog[rows_end:], columns=endog_names)
         mdl.fit(tr_df)
         pred_te = mdl.forecast_rolling(te_df, tr_df).values[:, 0]
         gi = np.arange(rows_end, n) + off
@@ -132,9 +141,8 @@ def run_local_pkg(g: pd.DataFrame, date_col: str, target: str, feats: list[str],
         alpha = float(lasso_alpha) if lasso_alpha is not None else 0.0
         mdl = VARXModel(p=p, q=max(1, q), penalty=penalty, alpha=alpha, trend="c", exog_lag_mode="past_only")
         
-        exog_names = [f"X_{k+1}" for k in range(exog.shape[1])]
-        tr_y = pd.DataFrame(endog[:rows_end], columns=[target])
-        te_y = pd.DataFrame(endog[rows_end:], columns=[target])
+        tr_y = pd.DataFrame(endog[:rows_end], columns=endog_names)
+        te_y = pd.DataFrame(endog[rows_end:], columns=endog_names)
         tr_x = pd.DataFrame(exog[:rows_end], columns=exog_names)
         te_x = pd.DataFrame(exog[rows_end:], columns=exog_names)
 
@@ -143,10 +151,14 @@ def run_local_pkg(g: pd.DataFrame, date_col: str, target: str, feats: list[str],
         gi = np.arange(rows_end, n) + off
         y_pred = reconstruct_level(lvl, gi, d, pred_te)
 
+    y_prev_arr = lvl[gi - 1]
+    if shrinkage is not None and 0.0 < float(shrinkage) < 1.0:
+        y_pred = y_prev_arr + float(shrinkage) * (y_pred - y_prev_arr)
+
     out = pd.DataFrame({
         "date": g[date_col].to_numpy()[gi],
         "y_true": lvl[gi],
         "y_pred": y_pred,
-        "y_prev": lvl[gi - 1]
+        "y_prev": y_prev_arr
     })
     return out, mdl

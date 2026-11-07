@@ -157,11 +157,12 @@ def make_lagged(Y: np.ndarray, X: Optional[np.ndarray], p: int, s: int, h: int =
 # 3. K MLP độc lập, tính song song (không vòng for qua tỉnh trong forward)
 # ----------------------------------------------------------------------------
 class _ParallelMLP(nn.Module):
-    """K MLP độc lập (mỗi phương trình một mạng), cùng nhận vector Z. Output (B, K)."""
+    """K MLP độc lập (mỗi phương trình một mạng), cùng nhận vector Z. Output (B, K). Có hỗ trợ Residual Learning."""
 
-    def __init__(self, K: int, d_in: int, hidden: Sequence[int], dropout: float):
+    def __init__(self, K: int, d_in: int, hidden: Sequence[int], dropout: float, residual: bool = True):
         super().__init__()
         self.K = K
+        self.residual = residual
         dims = [d_in] + list(hidden) + [1]
         self.W = nn.ParameterList()
         self.b = nn.ParameterList()
@@ -169,6 +170,9 @@ class _ParallelMLP(nn.Module):
             bound = 1.0 / math.sqrt(a)           # tương đương init mặc định của nn.Linear
             self.W.append(nn.Parameter((torch.rand(K, a, b) * 2 - 1) * bound))
             self.b.append(nn.Parameter((torch.rand(K, 1, b) * 2 - 1) * bound))
+        if self.residual:
+            self.W[-1].data.zero_()
+            self.b[-1].data.zero_()
         self.drop = nn.Dropout(dropout)
 
     def forward(self, z: torch.Tensor) -> torch.Tensor:      # z: (B, d_in)
@@ -178,7 +182,8 @@ class _ParallelMLP(nn.Module):
             h = torch.bmm(h, w) + b                          # (K, B, out)
             if i < last:
                 h = self.drop(torch.relu(h))
-        return h.squeeze(-1).t()                             # (B, K)
+        delta = h.squeeze(-1).t()
+        return (z[:, :self.K] + delta) if self.residual else delta
 
 
 # ----------------------------------------------------------------------------
@@ -320,7 +325,7 @@ class DeepVAR:
         to = lambda a: torch.from_numpy(a).to(self.device)
         Ztr, Ttr, Zva, Tva = to(Z[tr]), to(Tgt[tr]), to(Z[va]), to(Tgt[va])
         opt = torch.optim.AdamW(self.net.parameters(), lr=c.lr, weight_decay=c.weight_decay)
-        lossf = nn.MSELoss()
+        lossf = nn.SmoothL1Loss(beta=0.01)  # Huber Loss giúp chống sốc giá ngoại lai
         gen = torch.Generator()
         gen.manual_seed(c.seed)
 

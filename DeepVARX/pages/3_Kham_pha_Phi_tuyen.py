@@ -83,7 +83,8 @@ with tab2:
              "TRAIN, kiểm chứng bằng R² trên 20% cuối. Chạy ở <b>tỉnh đại diện</b> và trên <b>toàn bộ các tỉnh</b> để kiểm tra độ nhất quán.")
     m1, m2 = st.columns(2)
     n_lags = m1.number_input("Số lag", 1, 30, 5)
-    top_n = m2.number_input("Top-n coi là quan trọng", 1, max(1, len(xcols)), min(3, len(xcols)))
+    top_n = m2.number_input("Top-n coi là quan trọng", 1, max(1, len(xcols)), len(xcols),
+                            help="Mặc định lấy toàn bộ số biến để không bỏ sót biến sang Trang 4")
     try:
         imp_p, info_p = run_xgb(panel, pm["date_col"], pm["entity_col"], target, xcols, d_eff, train_end, int(n_lags),
                                 "proxy", df)

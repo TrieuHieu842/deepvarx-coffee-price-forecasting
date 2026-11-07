@@ -226,8 +226,43 @@ def mape(y, yhat) -> float:
     return float(np.mean(np.abs((y - yhat) / np.where(y == 0, np.nan, y))) * 100)
 
 
-def metrics(y, yhat) -> dict:
-    return {"RMSE": rmse(y, yhat), "MAE": mae(y, yhat), "MAPE (%)": mape(y, yhat)}
+def smape(y, yhat) -> float:
+    """Symmetric Mean Absolute Percentage Error (sMAPE) chuẩn M4/M5 competition:
+    sMAPE = 100% * mean( 2 * |y - yhat| / (|y| + |yhat|) )"""
+    y, yhat = np.asarray(y, float), np.asarray(yhat, float)
+    denom = (np.abs(y) + np.abs(yhat)) / 2.0
+    mask = denom > 1e-8
+    if not np.any(mask):
+        return 0.0
+    return float(np.mean(np.abs(y[mask] - yhat[mask]) / denom[mask]) * 100.0)
+
+
+def r2_score_calc(y, yhat) -> float:
+    """Hệ số xác định R² (Coefficient of Determination) Out-of-Sample:
+    R² = 1 - sum((y - yhat)^2) / sum((y - mean(y))^2)"""
+    y, yhat = np.asarray(y, float), np.asarray(yhat, float)
+    ss_res = np.sum((y - yhat) ** 2)
+    ss_tot = np.sum((y - np.mean(y)) ** 2)
+    if ss_tot < 1e-12:
+        return 0.0
+    return float(1.0 - ss_res / ss_tot)
+
+
+def metrics(y, yhat, y_prev=None) -> dict:
+    res = {
+        "RMSE": rmse(y, yhat),
+        "MAE": mae(y, yhat),
+        "MAPE (%)": mape(y, yhat),
+        "sMAPE (%)": smape(y, yhat),
+        "R²": r2_score_calc(y, yhat),
+    }
+    if y_prev is not None:
+        y_arr = np.asarray(y, float)
+        yhat_arr = np.asarray(yhat, float)
+        prev_arr = np.asarray(y_prev, float)
+        da = np.mean((y_arr > prev_arr) == (yhat_arr > prev_arr)) * 100.0
+        res["Đúng hướng (%)"] = round(float(da), 1)
+    return res
 
 
 # ----------------------------------------------------------------------------- xuất dữ liệu huấn luyện

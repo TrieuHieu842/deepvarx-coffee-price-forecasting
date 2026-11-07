@@ -80,8 +80,9 @@ with tab1:
             entity_cols = k2.multiselect("Cột không gian (tỉnh/khu vực; có thể thêm loại cà phê)", cols_all,
                                          default=det["entity"])
             nums = numeric_columns(tbl, exclude=[date_col] + entity_cols)
-            target_pick = k3.selectbox("Cột giá mục tiêu Y", nums,
-                                       index=nums.index(det["target"]) if det["target"] in nums else 0) if nums else None
+            def_t = "coffee_price_vn" if "coffee_price_vn" in nums else (det["target"] if det["target"] in nums else nums[0])
+            target_pick = k3.selectbox("Cột giá mục tiêu Y₁ (Trọng tâm)", nums,
+                                       index=nums.index(def_t)) if nums else None
             o1, o2 = st.columns(2)
             dayfirst = o1.checkbox("Ngày dạng dd/mm/yyyy (day-first)", value=False)
             dup_label = o2.radio("Khi trùng khoá (thực thể + ngày)",
@@ -207,12 +208,17 @@ with tab3:
     zr = pd.DataFrame({"Biến": x_after,
                        "Tỷ lệ Δ=0 (TRAIN)": panel_zero_diff(interp, date_col, entity_col, x_after, train_end).to_numpy()})
     s1, s2 = st.columns([1, 2])
-    static_thr = s1.slider("Ngưỡng tỷ lệ Δ=0", 0.1, 1.0, 0.5, 0.05)
+    static_thr = s1.slider("Ngưỡng tỷ lệ Δ=0", 0.1, 1.0, 0.95, 0.05,
+                           help="Chỉ loại các biến hầu như bất biến (ví dụ >95% ngày không đổi). Đặt cao để giữ biến mùa vụ/tồn kho.")
     zr["Đề xuất loại"] = np.where(zr["Tỷ lệ Δ=0 (TRAIN)"] >= static_thr, "🗑️ Loại", "")
     with s2:
         st.dataframe(zr.style.format({"Tỷ lệ Δ=0 (TRAIN)": "{:.1%}"}), width="stretch", hide_index=True)
+    
+    keep_all_x = st.checkbox("Giữ lại toàn bộ biến nghiên cứu (Không tự động ép loại biến)", value=True,
+                             help="Bỏ chọn nếu muốn hệ thống tự động loại bớt biến theo ngưỡng")
+    
     drop_static = st.multiselect("Biến X bị loại (tần suất giả / đứng yên)", x_after,
-                                 default=zr.loc[zr["Đề xuất loại"] != "", "Biến"].tolist())
+                                 default=[] if keep_all_x else zr.loc[zr["Đề xuất loại"] != "", "Biến"].tolist())
     cand = [c for c in x_after if c not in drop_static]
     removal_multi = pd.DataFrame(columns=["Biến", "Lý do", "Đại diện giữ lại"])
     drop_multi, final_x = [], cand
@@ -220,8 +226,8 @@ with tab3:
         dtr = panel_diff_train_z(interp, date_col, entity_col, [target] + cand, train_end)
         k1, k2, k3 = st.columns(3)
         corr_method = k1.radio("Tương quan", ["pearson", "spearman"], horizontal=True)
-        rho_thr = k2.slider("Ngưỡng |ρ|", 0.5, 0.99, 0.80, 0.01)
-        vif_thr = k3.slider("Ngưỡng VIF", 3.0, 30.0, 10.0, 0.5)
+        rho_thr = k2.slider("Ngưỡng |ρ|", 0.5, 0.99, 0.95, 0.01)
+        vif_thr = k3.slider("Ngưỡng VIF", 3.0, 50.0, 20.0, 1.0)
         corr = dtr[cand].corr(method=corr_method)
         hm = go.Figure(go.Heatmap(z=corr.values, x=corr.columns, y=corr.index, zmin=-1, zmax=1, colorscale="RdBu",
                                   reversescale=True, text=corr.round(2).values, texttemplate="%{text}"))
@@ -237,7 +243,7 @@ with tab3:
             st.dataframe(vif_table(dtr[cand]), width="stretch", hide_index=True)
         removal_multi = suggest_multicollinearity_drops(dtr, target, cand, rho_thr, vif_thr, corr_method)
         drop_multi = st.multiselect("Biến X bị loại (đa cộng tuyến — giữ 1 đại diện/cụm)", cand,
-                                    default=removal_multi["Biến"].tolist())
+                                    default=[] if keep_all_x else removal_multi["Biến"].tolist())
         final_x = [c for c in cand if c not in drop_multi]
     else:
         st.info("Còn ít hơn 2 biến X — bỏ qua lọc đa cộng tuyến.")
@@ -267,9 +273,18 @@ with tab3:
         clean = interp[[date_col, entity_col, target] + final_x].copy()
         proxy_df = entity_frame(clean, date_col, entity_col, proxy, [target] + final_x)
         reset_downstream("raw")
+        
+        default_endog = [c for c in ["coffee_price_vn", "coffee_price_london_vnd", "coffee_price_arabica_vnd"] if c in clean.columns]
+        if not default_endog:
+            default_endog = [target]
+        default_exog = [c for c in ["coffee_inventory", "diesel_price_vnd_liter", "usd_vnd_rate", "is_harvest_season_vn", "is_harvest_season_brazil"]
+                        if c in clean.columns and c not in default_endog]
+
         st.session_state.update(
             df_clean_panel=clean, df_clean=proxy_df, x_cols=final_x, train_end=train_end, proxy_province=proxy,
-            train_n=int((proxy_df.index <= train_end).sum()), removal_log=log_df)
+            train_n=int((proxy_df.index <= train_end).sum()), removal_log=log_df,
+            endog_cols=default_endog, chosen_endog=default_endog,
+            exog_cols=default_exog, chosen_x_features=default_exog)
         st.success(f"Đã lưu df_clean_panel ({len(clean):,} dòng, {clean[entity_col].nunique()} tỉnh) và chuỗi đại diện "
                    f"**{proxy}** ({len(proxy_df):,} dòng). Chuyển sang **Trang 2**.")
     if st.session_state.get("df_clean_panel") is not None:

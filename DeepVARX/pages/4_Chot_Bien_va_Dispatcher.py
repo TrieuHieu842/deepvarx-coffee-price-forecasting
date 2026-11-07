@@ -1,8 +1,12 @@
+import importlib
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import streamlit as st
+
+import modules.dispatcher
+importlib.reload(modules.dispatcher)
 
 from modules.data_utils import difference
 from modules.dispatcher import PKG_FILES, build_packages
@@ -92,131 +96,157 @@ with st.expander("Hồ sơ minh chứng tổng hợp (Evidence Matrix)", expande
            .map(lambda v: "background-color:#e8daef" if v.startswith("Có") else "", subset=["Phi tuyến BDS"]))
     st.dataframe(sty, width="stretch", hide_index=True)
 
-# =============================================================================== PHẦN 2: hai giỏ biến
-st.subheader("Chốt biến — hai tập dữ liệu")
-r1, r2, r3 = st.columns(3)
-top_n = r1.number_input("Top-n XGBoost coi là quan trọng", 1, max(1, len(xcols)), min(3, len(xcols)))
-min_cons = r2.slider("Nhất quán tối thiểu giữa các tỉnh (Granger)", 0, 100, 0, 10,
-                     help="0% = chỉ cần đạt ở tỉnh đại diện. Tăng lên để loại biến chỉ đạt ở vài tỉnh.") / 100
+# =============================================================================== PHẦN 2: Bộ 3 Biến Nội sinh (Y) & Danh sách Biến Ngoại sinh (X)
+st.divider()
+st.subheader("1. Bộ 3 biến nội sinh (Y — Đều là Giá Cà Phê)")
+st.caption("Theo kế hoạch cải tiến mô hình, hệ thống sử dụng bộ 3 chuỗi giá cà phê tương hỗ làm các biến nội sinh:")
+
+col_y1, col_y2, col_y3 = st.columns(3)
+with col_y1:
+    st.info("**Y₁: `coffee_price_vn`**\n\nGiá cà phê Robusta thu mua bình quân tại Việt Nam (VNĐ/kg) — **Biến mục tiêu trọng tâm cần dự báo**.")
+with col_y2:
+    st.info("**Y₂: `coffee_price_london_vnd`**\n\nGiá Robusta sàn ICE London quy đổi sang VNĐ/kg (`london_price_usd_ton * usd_vnd_rate / 1000`). Chuẩn quốc tế tham chiếu >95% hợp đồng.")
+with col_y3:
+    st.info("**Y₃: `coffee_price_arabica_vnd`**\n\nGiá Arabica sàn ICE New York quy đổi sang VNĐ/kg (`arabica_price_usd_lb * usd_vnd_rate / 0.45359237`). Tác động qua tỷ lệ phối trộn/thay thế.")
+
+all_panel_cols = list(panel.columns)
+planned_endog = ["coffee_price_vn", "coffee_price_london_vnd", "coffee_price_arabica_vnd"]
+available_endog = [c for c in planned_endog if c in all_panel_cols]
+if not available_endog:
+    available_endog = [target] if target in all_panel_cols else [c for c in all_panel_cols if "price" in c.lower()][:3]
+
+c_y_btn1, c_y_btn2 = st.columns([2, 2])
+if c_y_btn1.button("🎯 Đặt lại Bộ 3 biến nội sinh đề xuất", help="Khôi phục mặc định: coffee_price_vn, coffee_price_london_vnd, coffee_price_arabica_vnd", use_container_width=True):
+    st.session_state["chosen_endog"] = available_endog
+    st.rerun()
+
+if "chosen_endog" not in st.session_state or not st.session_state["chosen_endog"]:
+    st.session_state["chosen_endog"] = available_endog
+
+endog_options = list(dict.fromkeys(available_endog + [c for c in all_panel_cols if any(k in c.lower() for k in ["price", "gia", "vnd"]) and c != date_col and c != entity_col]))
+chosen_endog = st.multiselect(
+    "Danh sách biến nội sinh (Y) đưa vào hệ thống mô hình:",
+    options=endog_options,
+    default=[c for c in st.session_state["chosen_endog"] if c in endog_options],
+    help="Các biến nội sinh sẽ được dự báo đồng thời trong hệ thống VAR / DeepVAR. Biến đầu tiên là biến mục tiêu trọng tâm (Y₁)."
+)
+st.session_state["chosen_endog"] = chosen_endog
+if not chosen_endog:
+    st.error("⚠️ Phải chọn ít nhất 1 biến nội sinh làm mục tiêu dự báo!")
+else:
+    st.success(f"✅ Đã chọn **{len(chosen_endog)}** biến nội sinh (Y): {', '.join(chosen_endog)}. Biến mục tiêu trọng tâm Y₁: **{chosen_endog[0]}**")
+
+# =============================================================================== PHẦN 3: Lựa chọn Biến Ngoại sinh (X)
+st.divider()
+st.subheader("2. Lựa chọn danh sách biến ngoại sinh (X) — Các nhân tố Vĩ mô & Thị trường")
+st.caption("Chọn các biến ngoại sinh bạn muốn đưa vào huấn luyện mô hình. Hệ thống sẽ cấp phát đồng nhất tập biến này "
+           "cho tất cả các mô hình có biến ngoại sinh (VARX, VARX-L, DeepVARX, LSTM). "
+           "**Lưu ý: Các biến nội sinh (chuỗi giá cà phê) đã được tách riêng ở Mục 1 và không nằm trong danh sách X này.**")
+
+exclude_from_x = set(chosen_endog) | {"london_price_usd_ton", "arabica_price_usd_lb", "coffee_price_vnd_kg_raw", "coffee_price_vnd_kg",
+                                     "coffee_price_vn", "coffee_price_london_vnd", "coffee_price_arabica_vnd"}
+avail_x = [c for c in xcols if c not in exclude_from_x]
+
+planned_exog = ["coffee_inventory", "diesel_price_vnd_liter", "usd_vnd_rate", "is_harvest_season_vn", "is_harvest_season_brazil"]
+rec_exog = [c for c in planned_exog if c in avail_x]
+if not rec_exog:
+    rec_exog = [c for c in avail_x if (c in R.index and (R.loc[c, "gr_ok"] or R.loc[c, "ccf_ok"])) or "harvest" in c or "usd" in c][:5]
+
+bx1, bx2, bx3, bx4 = st.columns(4)
+if bx1.button("🎯 Chọn bộ 5 biến ngoại sinh đề xuất", help="Khôi phục mặc định: coffee_inventory, diesel_price_vnd_liter, usd_vnd_rate, is_harvest_season_vn, is_harvest_season_brazil", use_container_width=True):
+    st.session_state["chosen_x_features"] = rec_exog
+    st.rerun()
+
+if bx2.button("🌟 Chọn tất cả biến ngoại sinh", help="Đưa toàn bộ biến ngoại sinh khả dụng vào mô hình", use_container_width=True):
+    st.session_state["chosen_x_features"] = list(avail_x)
+    st.rerun()
+
+if bx3.button("📊 Chọn biến đạt thống kê", help="Chọn các biến ngoại sinh đạt Granger, CCF hoặc BDS", use_container_width=True):
+    stat_vars = [c for c in avail_x if c in R.index and (R.loc[c, "gr_ok"] or R.loc[c, "ccf_ok"])]
+    st.session_state["chosen_x_features"] = stat_vars if stat_vars else rec_exog
+    st.rerun()
+
+if bx4.button("🧹 Bỏ chọn tất cả biến X", help="Xóa chọn biến ngoại sinh để mô hình chỉ chạy với chuỗi nội sinh", use_container_width=True):
+    st.session_state["chosen_x_features"] = []
+    st.rerun()
+
+if "chosen_x_features" not in st.session_state or any(c in st.session_state["chosen_x_features"] for c in exclude_from_x):
+    st.session_state["chosen_x_features"] = [c for c in (st.session_state.get("chosen_x_features") or rec_exog) if c in avail_x]
+    if not st.session_state["chosen_x_features"]:
+        st.session_state["chosen_x_features"] = rec_exog
+
+chosen_x = st.multiselect(
+    "Danh sách biến ngoại sinh X đưa vào huấn luyện mô hình:",
+    options=avail_x,
+    default=[c for c in st.session_state["chosen_x_features"] if c in avail_x],
+    help="Bạn có thể tự do thêm hoặc bớt bất kỳ biến ngoại sinh nào. Mọi mô hình dự báo sẽ nhận đúng tập biến này."
+)
+st.session_state["chosen_x_features"] = chosen_x
+
+if chosen_x:
+    st.success(f"Đã chọn **{len(chosen_x)}** biến ngoại sinh (X): {', '.join(chosen_x)}")
+    with st.expander("Bảng đối soát thống kê của các biến ngoại sinh đã chọn", expanded=False):
+        sub_M = M[M["Biến (X)"].isin(chosen_x)]
+        st.dataframe(sub_M, width="stretch", hide_index=True)
+else:
+    st.warning("⚠️ Chưa chọn biến ngoại sinh nào. Các mô hình đa biến sẽ chạy chỉ với chuỗi giá nội sinh.")
+
+# =============================================================================== PHẦN 4: Cấu hình mốc Train/Test & Mô hình cơ sở
+st.divider()
+st.subheader("3. Thiết lập mô hình cơ sở & Mốc chia Train / Test")
+c_m1, c_m2 = st.columns(2)
+
 auto_model = st.session_state.get("base_model", "VAR")
 bm_opts = ["VAR", "VECM"] if d == 1 else ["VAR"]
-base_model = r3.selectbox("Mô hình cơ sở (từ Johansen ở Trang 2)", bm_opts, index=bm_opts.index(auto_model) if auto_model in bm_opts else 0)
+base_model = c_m1.selectbox("Mô hình cơ sở tuyến tính (từ Johansen ở Trang 2)", bm_opts,
+                            index=bm_opts.index(auto_model) if auto_model in bm_opts else 0)
 
-left, right = st.columns(2, gap="large")
-
-
-def _fail(r) -> str:
-    out = []
-    if not r.gr_ok:
-        out.append(f"Trượt Granger (p={fmt_p(r.gr_p)})")
-    if r.vif >= 10:
-        out.append(f"VIF={r.vif:.1f} ≥ 10")
-    if not r.stat_ok:
-        out.append(f"chưa dừng ở d={d}")
-    if r.cons / max(n_prov, 1) < min_cons:
-        out.append(f"chỉ đạt ở {int(r.cons)}/{n_prov} tỉnh")
-    return "; ".join(out)
-
-
-base_auto = {v: bool(R.loc[v, "gr_ok"] and R.loc[v, "vif"] < 10 and R.loc[v, "stat_ok"]
-                     and R.loc[v, "cons"] / max(n_prov, 1) >= min_cons) for v in xcols}
-with left:
-    st.markdown("#### Tập Cơ Sở")
-    st.caption(f"Luồng tuyến tính · {base_model}, VARX")
-    st.markdown("**Quy tắc tự động**\n- Granger = Đạt (p < 0.05)\n- Không vướng VIF cao (< 10)\n"
-                f"- Đồng nhất bậc d (dừng sau khi sai phân d = {d})\n- Nhất quán ≥ {min_cons:.0%} số tỉnh")
-    base_sel = {}
-    for v in sorted(xcols, key=lambda v: (not base_auto[v], R.loc[v, "gr_p"])):
-        r = R.loc[v]
-        ok = base_auto[v]
-        base_sel[v] = st.checkbox(f"{'✅' if ok else '❌'} {v} — " + (f"Granger p={fmt_p(r.gr_p)}, {int(r.cons)}/{n_prov} tỉnh" if ok else _fail(r)),
-                                  value=ok, key=f"base_{v}_{int(ok)}_{d}_{int(min_cons * 100)}")
-    base_final = [v for v in xcols if base_sel[v]]
-    if base_model == "VECM":
-        st.warning("Gói A giữ **mức gốc** để mô hình tự tính số hạng hiệu chỉnh sai số (ECT) từ Johansen.")
-    elif d > 0:
-        st.warning(f"Gói A sẽ bị ép sai phân bậc d = {d} để thỏa mãn tính dừng.")
-
-with right:
-    st.markdown("#### Tập Mở Rộng")
-    st.caption("Luồng phi tuyến · VARX-L, LSTM, DeepVAR, DeepVARX")
-    st.markdown(f"**Quy tắc tự động**\n- Bao gồm toàn bộ Tập Cơ Sở\n- Cộng biến có tín hiệu phi tuyến (BDS) hoặc Top {top_n} XGBoost (kể cả đã trượt Granger)")
-    reasons = {v: "Kế thừa Tập cơ sở" for v in base_final}
-    for v in base_final:
-        st.checkbox(f"✅ {v} — Kế thừa Tập cơ sở", value=True, disabled=True, key=f"ext_inh_{v}")
-    extras = [v for v in xcols if v not in base_final]
-    auto_ext = {v: bool(R.loc[v, "bds_yes"] or R.loc[v, "xgb_rank"] <= top_n) for v in extras}
-    ext_extra = []
-    for v in sorted(extras, key=lambda v: (not auto_ext[v], R.loc[v, "xgb_rank"])):
-        r = R.loc[v]
-        why = []
-        if r.bds_yes:
-            why.append("Tín hiệu BDS phi tuyến")
-        if r.xgb_rank <= top_n:
-            why.append(f"Top {r.xgb_rank} XGBoost" + (" dù trượt Granger" if not r.gr_ok else ""))
-        reason = "; ".join(why) if why else "Không có tín hiệu phi tuyến / XGBoost thấp"
-        on = st.checkbox(f"{'🌟' if auto_ext[v] else '▫️'} {v} — {reason}", value=auto_ext[v],
-                         key=f"ext_{v}_{int(auto_ext[v])}_{top_n}_{len(base_final)}")
-        if on:
-            ext_extra.append(v)
-            reasons[v] = reason
-    ext_final = base_final + ext_extra
-    st.info("Gói C giữ mức gốc (d = 0), Standard Scaler **theo từng tỉnh** (khớp trên TRAIN) + mã hóa tỉnh (embedding).")
-
-c1, c2, c3 = st.columns(3)
-c1.metric("Tập Cơ Sở", f"{len(base_final)} biến")
-c2.metric("Tập Mở Rộng", f"{len(ext_final)} biến")
-c3.metric("Dành riêng cho DeepVARX", f"+{len(ext_final) - len(base_final)} biến")
-
-# =============================================================================== PHẦN 3: Dispatcher
-st.divider()
-st.subheader("Bộ định tuyến dữ liệu")
 dates = np.sort(panel[date_col].unique())
 cur_ratio = (dates <= np.datetime64(train_end)).sum() / len(dates)
 opts = sorted({0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, round(cur_ratio, 2)})
 def_idx = min(range(len(opts)), key=lambda i: abs(opts[i] - cur_ratio))
-sel = st.selectbox("Mốc chia Train/Test (theo ngày, chung cho mọi tỉnh — kế thừa từ Trang 1)", opts, index=def_idx,
-                   format_func=lambda r: f"{r:.0%} — TRAIN đến {pd.Timestamp(dates[max(int(len(dates) * r) - 1, 0)]):%d/%m/%Y}")
+sel = c_m2.selectbox("Mốc chia Train/Test (theo ngày chung cho toàn panel)", opts, index=def_idx,
+                     format_func=lambda r: f"{r:.0%} — TRAIN đến {pd.Timestamp(dates[max(int(len(dates) * r) - 1, 0)]):%d/%m/%Y}")
 new_end = train_end if sel == opts[def_idx] else train_end_from_ratio(panel, date_col, sel)
 if new_end < train_end:
     st.warning("Mốc TRAIN mới sớm hơn mốc đã dùng ở Trang 1–3: bằng chứng chọn biến đã nhìn thấy một phần TEST mới → rủi ro rò rỉ.")
-st.markdown(
-    f"- **Gói A** (Tập Cơ Sở, {'mức gốc' if base_model == 'VECM' else f'sai phân bậc {d}'}) → VAR/VECM, VARX  \n"
-    f"- **Gói B** (Tập Mở Rộng, sai phân bậc {d}) → VARX-L  \n"
-    "- **Gói C** (Tập Mở Rộng, mức gốc, Standard Scaler theo tỉnh + mã tỉnh) → LSTM, DeepVAR, DeepVARX")
+
+# =============================================================================== PHẦN 5: Nút xác nhận & Sinh dữ liệu
+st.divider()
 st.markdown("<style>button[data-testid='stBaseButton-primary']{height:3.4rem;font-size:1.1rem;font-weight:700}</style>",
             unsafe_allow_html=True)
-try:
-    clicked = st.button("CẮT PANEL THÀNH 3 GÓI DỮ LIỆU HUẤN LUYỆN", type="primary", width="stretch")
-except TypeError:
-    clicked = st.button("CẮT PANEL THÀNH 3 GÓI DỮ LIỆU HUẤN LUYỆN", type="primary", use_container_width=True)
+clicked = st.button("🚀 XÁC NHẬN BỘ BIẾN & TẠO DỮ LIỆU HUẤN LUYỆN", type="primary", use_container_width=True)
 
 if clicked:
-    if not ext_final:
-        st.error("Chưa chọn biến nào. Hãy tick ít nhất một biến trước khi tạo gói.")
-    else:
-        if not base_final:
-            st.warning("Tập Cơ Sở rỗng: VARX sẽ không có biến ngoại sinh (chỉ còn VAR).")
-        with st.spinner("Đang cắt gói dữ liệu…"):
-            pk, meta = build_packages(panel, date_col, entity_col, target, base_final, ext_final, int(d), new_end, base_model)
-        reset_downstream("base_set")
-        st.session_state.update(train_end=new_end, base_set=base_final, ext_set=ext_final, ext_sources=reasons,
-                                base_model=base_model, packages=pk, pkg_meta=meta, export_paths=meta["paths"])
-        n_e = panel[entity_col].nunique()
-        st.success(f"Đã tạo 3 gói cho **{n_e}** tỉnh: A = {len(pk['A']):,} dòng ({len(base_final)} biến X) · "
-                   f"B = {len(pk['B']):,} dòng ({len(ext_final)} biến X) · C = {len(pk['C']):,} dòng ({len(ext_final)} biến X). "
-                   f"TRAIN đến {new_end:%d/%m/%Y}.")
-        st.toast("Đã khởi tạo 3 gói dữ liệu huấn luyện")
+    selected_x = list(chosen_x)
+    selected_y = list(chosen_endog) if chosen_endog else ([target] if target else ["coffee_price_vn"])
+    primary_target = selected_y[0]
+    
+    with st.spinner("Đang chuẩn bị dữ liệu huấn luyện cho toàn panel…"):
+        try:
+            pk, meta = modules.dispatcher.build_packages(panel, date_col, entity_col, primary_target, selected_x, selected_x, int(d), new_end, base_model, endog_cols=selected_y)
+        except TypeError:
+            importlib.reload(modules.dispatcher)
+            pk, meta = modules.dispatcher.build_packages(panel, date_col, entity_col, primary_target, selected_x, selected_x, int(d), new_end, base_model, endog_cols=selected_y)
+    reset_downstream("base_set")
+    st.session_state.update(
+        train_end=new_end, target=primary_target, endog_cols=selected_y, exog_cols=selected_x,
+        base_set=selected_x, ext_set=selected_x,
+        ext_sources={v: "Người dùng chọn trực tiếp" for v in selected_x},
+        base_model=base_model, packages=pk, pkg_meta=meta, export_paths=meta["paths"]
+    )
+    n_e = panel[entity_col].nunique()
+    st.success(f"🎉 Đã tạo thành công dữ liệu cho **{n_e}** tỉnh với **{len(selected_y)}** biến nội sinh (Y: {', '.join(selected_y)}) "
+               f"và **{len(selected_x)}** biến ngoại sinh (X: {', '.join(selected_x)}). TRAIN đến {new_end:%d/%m/%Y}.")
+    st.toast("Dữ liệu huấn luyện đã sẵn sàng!")
 
+# =============================================================================== PHẦN 6: Xem trước dữ liệu đã lưu
 pk, meta = st.session_state.get("packages"), st.session_state.get("pkg_meta")
 if pk is not None:
-    st.markdown(f"**Gói đã lưu** — Tập Cơ Sở: {', '.join(meta['base']) or '(rỗng)'} · Tập Mở Rộng: {', '.join(meta['ext'])}")
-    names = {"A": "Gói A · Cơ Sở", "B": "Gói B · Mở Rộng (sai phân)", "C": "Gói C · Mở Rộng (scaled + mã tỉnh)"}
-    for tab, k in zip(st.tabs(list(names.values())), names):
-        with tab:
-            path = Path(meta["paths"][k])
-            st.caption(f"`data/processed/{PKG_FILES[k]}` · {len(pk[k]):,} dòng × {pk[k].shape[1]} cột")
-            st.dataframe(pk[k].head(8), width="stretch")
-            if path.exists():
-                st.download_button("Tải CSV", path.read_bytes(), file_name=PKG_FILES[k], mime="text/csv", key=f"dl_{k}")
-    st.page_link("pages/5_Dac_ta_Mo_hinh_va_Huan_luyen.py", label="Sang Trang 5 · Đặc tả mô hình & huấn luyện →", icon="🧬")
+    st.divider()
+    st.subheader("4. Dữ liệu huấn luyện đã sẵn sàng")
+    st.markdown(f"**Biến nội sinh (Y):** {', '.join(meta.get('endog_cols', [target]))} *(Mục tiêu dự báo trọng tâm Y₁: **{meta.get('target', target)}**)*")
+    st.markdown(f"**Biến ngoại sinh (X):** {', '.join(meta.get('exog_cols', meta.get('base', []))) if meta.get('exog_cols', meta.get('base')) else '(Không dùng biến ngoại sinh)'}")
+    st.caption(f"Bảng dữ liệu: {len(pk['C']):,} dòng × {pk['C'].shape[1]} cột (đã chuẩn hóa và sẵn sàng cho các mô hình)")
+    st.dataframe(pk["C"].head(8), width="stretch")
+    st.page_link("pages/5_Dac_ta_Mo_hinh_va_Huan_luyen.py", label="Chuyển sang Trang 5 · Đặc tả mô hình & Huấn luyện →", icon="🧬")

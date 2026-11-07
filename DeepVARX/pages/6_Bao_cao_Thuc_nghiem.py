@@ -1,8 +1,12 @@
+import importlib
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from scipy import stats
+
+import modules.data_utils
+importlib.reload(modules.data_utils)
 
 from modules.attention_utils import attention_verdict
 from modules.data_utils import metrics
@@ -28,6 +32,15 @@ if missing:
 provs = sorted(res[names[0]]["pred"]["province"].unique())
 P = {m: res[m]["pred"].assign(e=lambda x: x["y_true"] - x["y_pred"]) for m in names}
 
+# Tự động đồng bộ hóa các chỉ số mới (sMAPE, R²) cho các mô hình đã lưu từ phiên trước
+for m in names:
+    if "sMAPE (%)" not in res[m]["metrics"] or "R²" not in res[m]["metrics"]:
+        by_m = pd.DataFrame([{"province": e, **metrics(g["y_true"], g["y_pred"], g.get("y_prev"))}
+                             for e, g in res[m]["pred"].groupby("province")])
+        res[m]["by_prov"] = by_m
+        m_cols = [c for c in ["RMSE", "MAE", "MAPE (%)", "sMAPE (%)", "R²", "Đúng hướng (%)"] if c in by_m.columns]
+        res[m]["metrics"] = {k: float(by_m[k].mean()) for k in m_cols}
+
 
 def avg_metrics(m):
     return res[m]["metrics"]
@@ -39,18 +52,35 @@ tab1, tab2, tab3, tab4 = st.tabs(["Hiệu suất dự báo", "Đường dự bá
 with tab1:
     naive_by = pd.DataFrame([{"province": e, **metrics(g["y_true"], g["y_prev"])} for e, g in P[names[0]].groupby("province")])
     rows = [{"Mô hình": m, "Phạm vi": res[m]["scope"], **avg_metrics(m)} for m in names]
-    rows.append({"Mô hình": "Naive (tham chiếu)", "Phạm vi": "-", **{k: float(naive_by[k].mean()) for k in ("RMSE", "MAE", "MAPE (%)")}})
+    naive_row = {"Mô hình": "Naive (tham chiếu)", "Phạm vi": "-"}
+    for k in ("RMSE", "MAE", "MAPE (%)", "sMAPE (%)", "R²"):
+        if k in naive_by.columns:
+            naive_row[k] = float(naive_by[k].mean())
+    rows.append(naive_row)
     tbl = pd.DataFrame(rows)
     if "VAR" in res:
         base = res["VAR"]["metrics"]["RMSE"]
         tbl["Mức cải thiện so với VAR (%)"] = (base - tbl["RMSE"]) / base * 100
     else:
-        tbl["Mức cải thiện so với VAR (%)"] = np.nan
+        tbl["Mức cải thiện so with VAR (%)"] = np.nan
         st.info("Huấn luyện **VAR** ở Trang 5 để có cột “Mức cải thiện so với VAR”.")
     st.markdown(f"**Trung bình {len(provs)} tỉnh**")
-    st.dataframe(tbl.style.format({"RMSE": "{:,.1f}", "MAE": "{:,.1f}", "MAPE (%)": "{:.2f}", "Mức cải thiện so với VAR (%)": "{:+.1f}%"},
-                                  na_rep="–").highlight_min(subset=["RMSE", "MAE", "MAPE (%)"], color="#d5f5e3"),
-                 width="stretch", hide_index=True)
+    
+    fmt_dict = {
+        "RMSE": "{:,.1f}", "MAE": "{:,.1f}", "MAPE (%)": "{:.2f}%",
+        "sMAPE (%)": "{:.2f}%", "R²": "{:.4f}", "Đúng hướng (%)": "{:.1f}%",
+        "Mức cải thiện so với VAR (%)": "{:+.1f}%"
+    }
+    min_cols = [c for c in ["RMSE", "MAE", "MAPE (%)", "sMAPE (%)"] if c in tbl.columns]
+    max_cols = [c for c in ["R²", "Đúng hướng (%)"] if c in tbl.columns]
+    
+    styled = tbl.style.format(fmt_dict, na_rep="–")
+    if min_cols:
+        styled = styled.highlight_min(subset=min_cols, color="#d5f5e3")
+    if max_cols:
+        styled = styled.highlight_max(subset=max_cols, color="#d5f5e3")
+        
+    st.dataframe(styled, width="stretch", hide_index=True)
     if "DeepVARX" in res and "VAR" in res:
         imp = float(tbl.loc[tbl["Mô hình"] == "DeepVARX", "Mức cải thiện so với VAR (%)"].iloc[0])
         (st.success if imp > 0 else st.warning)(f"DeepVARX {'giảm' if imp > 0 else 'tăng'} **{abs(imp):.1f}%** RMSE trung bình so với VAR.")
@@ -68,6 +98,16 @@ with tab1:
         pm_ = pd.concat({m: res[m]["by_prov"].set_index("province")["MAPE (%)"] for m in names}, axis=1)
         st.markdown("**MAPE (%)**")
         st.dataframe(pm_.style.format("{:.2f}").highlight_min(axis=1, color="#d5f5e3"), width="stretch")
+        if "sMAPE (%)" in naive_by.columns:
+            ps_ = pd.concat({m: res[m]["by_prov"].set_index("province")["sMAPE (%)"] for m in names if "sMAPE (%)" in res[m]["by_prov"].columns}, axis=1)
+            ps_["Naive"] = naive_by.set_index("province")["sMAPE (%)"]
+            st.markdown("**sMAPE (%)**")
+            st.dataframe(ps_.style.format("{:.2f}%").highlight_min(axis=1, color="#d5f5e3"), width="stretch")
+        if "R²" in naive_by.columns:
+            pr_ = pd.concat({m: res[m]["by_prov"].set_index("province")["R²"] for m in names if "R²" in res[m]["by_prov"].columns}, axis=1)
+            pr_["Naive"] = naive_by.set_index("province")["R²"]
+            st.markdown("**R² (Hệ số xác định)**")
+            st.dataframe(pr_.style.format("{:.4f}").highlight_max(axis=1, color="#d5f5e3"), width="stretch")
         if "VAR" in res:
             gain = (piv[names].rsub(piv["VAR"], axis=0)).div(piv["VAR"], axis=0) * 100
             st.markdown("**Mức cải thiện RMSE so với VAR (%)**")

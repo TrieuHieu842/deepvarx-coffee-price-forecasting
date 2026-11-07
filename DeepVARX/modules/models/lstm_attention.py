@@ -47,41 +47,51 @@ class TemporalAttention(nn.Module):
 
 
 class LSTMForecaster(nn.Module):
-    """LSTM chuẩn: chuỗi (B, L, V) [+ embedding tỉnh] -> giá trị kế tiếp của Y. Không có Attention."""
+    """LSTM chuẩn: chuỗi (B, L, V) [+ embedding tỉnh] -> giá trị kế tiếp của Y. Có hỗ trợ Residual Learning."""
 
     has_attention = False
 
     def __init__(self, n_in: int, hidden: int = 64, layers: int = 1, dropout: float = 0.1,
-                 n_prov: int = 0, emb_dim: int = 0):
+                 n_prov: int = 0, emb_dim: int = 0, residual: bool = True):
         super().__init__()
+        self.residual = residual
         self.embed = ProvinceEmbedding(n_prov, emb_dim)
         self.lstm = nn.LSTM(n_in + self.embed.dim, hidden, num_layers=layers, batch_first=True,
                             dropout=dropout if layers > 1 else 0.0)
-        self.head = nn.Sequential(nn.Dropout(dropout), nn.Linear(hidden, 1))
+        self.head = nn.Linear(hidden, 1)
+        if self.residual:
+            nn.init.zeros_(self.head.weight)
+            nn.init.zeros_(self.head.bias)
 
     def forward(self, x: torch.Tensor, pid=None, return_attention: bool = False):
         h, _ = self.lstm(self.embed(x, pid))
-        return self.head(h[:, -1])
+        delta = self.head(h[:, -1])
+        return (x[:, -1, 0:1] + delta) if self.residual else delta
 
 
 class LSTMAttentionForecaster(nn.Module):
-    """LSTM kết hợp Temporal Attention: (B, L, V) [+ embedding tỉnh] -> context vector -> Y."""
+    """LSTM kết hợp Temporal Attention: (B, L, V) [+ embedding tỉnh] -> context vector -> Y. Có hỗ trợ Residual Learning."""
 
     has_attention = True
 
     def __init__(self, n_in: int, hidden: int = 64, layers: int = 1, dropout: float = 0.1,
-                 n_prov: int = 0, emb_dim: int = 0):
+                 n_prov: int = 0, emb_dim: int = 0, residual: bool = True):
         super().__init__()
+        self.residual = residual
         self.embed = ProvinceEmbedding(n_prov, emb_dim)
         self.lstm = nn.LSTM(n_in + self.embed.dim, hidden, num_layers=layers, batch_first=True,
                             dropout=dropout if layers > 1 else 0.0)
         self.temporal = TemporalAttention(hidden)
-        self.head = nn.Sequential(nn.Dropout(dropout), nn.Linear(2 * hidden, 1))
+        self.head = nn.Linear(2 * hidden, 1)
+        if self.residual:
+            nn.init.zeros_(self.head.weight)
+            nn.init.zeros_(self.head.bias)
 
     def forward(self, x: torch.Tensor, pid=None, return_attention: bool = False):
         h, _ = self.lstm(self.embed(x, pid))
         ctx, beta = self.temporal(h)
-        out = self.head(torch.cat([ctx, h[:, -1]], dim=-1))
+        delta = self.head(torch.cat([ctx, h[:, -1]], dim=-1))
+        out = (x[:, -1, 0:1] + delta) if self.residual else delta
         if return_attention:
             return out, None, beta
         return out
