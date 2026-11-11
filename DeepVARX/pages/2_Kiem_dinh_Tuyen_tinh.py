@@ -79,7 +79,7 @@ with tab1:
     show = stn.copy()
     for col in ["ADF p (d=0)", "KPSS p (d=0)", "ADF p (d=1)", "KPSS p (d=1)"]:
         show[col] = show[col].map(fmt_p)
-    planned_endog_set = {"coffee_price_vn", "coffee_price_london_vnd", "coffee_price_arabica_vnd"}
+    planned_endog_set = {"price_vnd_kg", "coffee_price_vn", "ret_price"}
     show.insert(1, "Vai trò", [("Y₁ (Mục tiêu)" if b == target else ("Y (Nội sinh)" if b in planned_endog_set else "X")) for b in show["Biến"]])
     st.dataframe(show, width="stretch", hide_index=True)
 

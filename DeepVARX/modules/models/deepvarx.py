@@ -16,6 +16,12 @@ from modules.data_utils import difference
 from modules.attention_utils import attention_verdict  # noqa: F401  (giữ để tương thích)
 from modules.models.lstm_attention import ProvinceEmbedding, TemporalAttention
 
+try:
+    from utils.deepvarx_model import CoffeeDeepVARX
+except Exception:
+    CoffeeDeepVARX = None
+
+
 
 class DeepVARX(nn.Module):
     has_attention = True

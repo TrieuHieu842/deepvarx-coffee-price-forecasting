@@ -33,6 +33,10 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
+_cur_dir = os.path.dirname(os.path.abspath(__file__))
+if _cur_dir not in sys.path:
+    sys.path.insert(0, _cur_dir)
+
 from deepvarx_coffee_models import (
     TARGET_PROVINCES,
     block_bootstrap_metric_ci,

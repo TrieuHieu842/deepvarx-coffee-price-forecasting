@@ -18,7 +18,7 @@ from modules.data_utils import DATA_PROC, DATA_RAW, ROOT, interpolate_train_safe
 ENTITY_HINTS = ["province", "provinces", "tinh", "tỉnh", "region", "vung", "vùng", "dia_phuong", "địa phương", "city",
                 "market", "thị trường"]
 DATE_HINTS = ["date", "ngay", "ngày", "datetime", "timestamp", "time", "month", "thang", "tháng"]
-DEFAULT_NAMES = ["coffee_price_cleaned.csv", "coffee-data.xlsx"]
+DEFAULT_NAMES = ["data_daily_panel_clean_v2.csv", "coffee_price_cleaned.csv", "coffee-data.xlsx"]
 
 
 # ----------------------------------------------------------------------------- đọc file

@@ -106,15 +106,17 @@ if is_linear:
         st.caption(f"Top gợi ý theo {c_used} (đã điền vào ô bên dưới):")
         st.dataframe(grid.head(5).style.format({c_used: "{:.1f}"}), width="stretch", hide_index=True)
     q1, q2, q3, q4 = st.columns(4)
-    hp["p"] = int(q1.number_input("Bậc trễ p (của Y)", 1, 10, value=1, key=kp, help="KHUYẾN NGHỊ p=1. Với chuỗi giá sai phân tài chính, p=1 mang lại RMSE thấp nhất và đánh bại Naive Benchmark. p>=2 sẽ gây overfitting"))
-    hp["q"] = int(q2.number_input("Bậc trễ q (của X)", 0, 10, value=1 if has_x else 0, key=kq, disabled=not has_x)) if has_x else 0
-    hp["alpha"] = float(q3.number_input("Hệ số phạt Lasso λ", 0.0001, 5.0, 0.05, format="%.4f", key=f"lam_{name}")) \
+    default_p = 5 if name in ["VARX", "VARX-L"] else 2
+    default_q = 2 if has_x else 0
+    hp["p"] = int(q1.number_input("Bậc trễ p (của Y)", 1, 10, value=default_p, key=kp, help="KHUYẾN NGHỊ: p=2 cho VAR (tối ưu theo AIC), p=5 cho VARX (Model 2 tối ưu thực nghiệm)"))
+    hp["q"] = int(q2.number_input("Bậc trễ q (của X)", 0, 10, value=default_q, key=kq, disabled=not has_x)) if has_x else 0
+    hp["alpha"] = float(q3.number_input("Hệ số phạt Lasso λ", 0.0001, 5.0, 0.1, format="%.4f", key=f"lam_{name}")) \
         if name == "VARX-L" else None
     hp["shrinkage"] = float(q4.slider("Shrinkage γ (Co cụm)", 0.1, 1.0, 0.85, step=0.05, key=f"sh_{name}",
                                       help="Damping biên độ nhảy của OLS: giữ nguyên 100% tỷ lệ đoán đúng hướng và triệt tiêu lỗi overshooting")) \
         if name in ["VAR", "VARX"] else 1.0
-    if hp["p"] > 1:
-        st.warning(f"⚠️ Cảnh báo: Bạn đang chọn p={hp['p']}. Với hệ nhiều biến, p>=2 sẽ làm số tham số tăng gấp bội và làm tăng RMSE. Khuyên dùng p=1.")
+    if hp["p"] > 5:
+        st.warning(f"⚠️ Cảnh báo: Bạn đang chọn p={hp['p']}. Với hệ nhiều biến, p quá lớn sẽ làm số tham số tăng gấp bội và làm tăng RMSE.")
     hp["per_prov"] = st.checkbox("Tự chọn (p, q) riêng cho từng tỉnh theo AIC/BIC (bỏ qua ô p, q ở trên)", value=False,
                                  key=f"pp_{name}")
     hp["ect"] = 0
@@ -124,14 +126,14 @@ if is_linear:
         hp["ect"] = jr if use_ect else 0
 else:
     c1, c2, c3, c4 = st.columns(4)
-    hp["epochs"] = int(c1.number_input("Số Epochs", 5, 500, 35, key=f"ep_{name}"))
-    hp["batch"] = int(c2.selectbox("Batch Size", [64, 128, 256, 512], index=2, key=f"bs_{name}"))
-    hp["lr"] = float(c3.select_slider("Learning Rate", [1e-4, 3e-4, 5e-4, 1e-3, 3e-3], value=3e-4,
+    hp["epochs"] = int(c1.number_input("Số Epochs", 5, 500, 30, key=f"ep_{name}"))
+    hp["batch"] = int(c2.selectbox("Batch Size", [16, 32, 64, 128, 256], index=0, key=f"bs_{name}"))
+    hp["lr"] = float(c3.select_slider("Learning Rate", [1e-4, 3e-4, 5e-4, 1e-3, 3e-3], value=1e-3,
                                       format_func=lambda x: f"{x:g}", key=f"lr_{name}"))
-    hp["hidden"] = int(c4.selectbox("Hidden Size", [16, 32, 48, 64, 128], index=2, key=f"hs_{name}"))
+    hp["hidden"] = int(c4.selectbox("Hidden Size", [16, 32, 48, 64, 128], index=3, key=f"hs_{name}"))
     e1, e2, e3, e4, e5 = st.columns(5)
-    hp["seq_len"] = int(e1.number_input("Độ dài chuỗi (seq_len)", 3, 60, 15, key=f"sl_{name}",
-                                        help="Cửa sổ 10-15 ngày giúp nắm bắt động lực ngắn hạn mà không làm loãng Attention"))
+    hp["seq_len"] = int(e1.number_input("Độ dài chuỗi (seq_len)", 3, 60, 10, key=f"sl_{name}",
+                                        help="Cửa sổ 10 ngày (Model 2 tối ưu thực nghiệm) giúp đạt RMSE thấp nhất"))
     hp["layers"] = int(e2.number_input("Số lớp LSTM", 1, 4, 1, key=f"ly_{name}"))
     hp["emb"] = int(e3.number_input("Chiều embedding tỉnh", 0, 32, 4, key=f"em_{name}",
                                     help="0 = không dùng mã hóa tỉnh"))
@@ -223,7 +225,7 @@ if run:
         n_val = max(1, int(n_train_total * 0.15))
         n_train = n_train_total - n_val
 
-        log(f"[nạp mô hình] modules.models.deepvar.DeepVAR (Mạng K={K} MLP song song)")
+        log(f"[nạp mô hình] utils.deepvar_model.CoffeeDeepVAR (Mạng K={K} song song)")
         log(f"[model] DeepVAR · {K} tỉnh song song · bậc trễ p={hp['seq_len']} · hidden=({hp['hidden']}, {max(16, hp['hidden']//2)}) · "
             f"train/val/test={n_train}/{n_val}/{T - n_train_total}")
 
@@ -270,13 +272,13 @@ if run:
         n_in = len(data["cols"])
         if name == "DeepVARX":
             Cls = DeepVARX
-            src_name = "modules.models.deepvarx.DeepVARX"
+            src_name = "utils.deepvarx_model.CoffeeDeepVARX"
         elif name == "LSTM" and hp.get("use_attention"):
             Cls = LSTMAttentionForecaster
             src_name = "modules.models.lstm_attention.LSTMAttentionForecaster (Temporal Attention)"
         else:
             Cls = LSTMForecaster
-            src_name = f"modules.models.lstm_attention.LSTMForecaster ({name})"
+            src_name = f"utils.lstm_model.CoffeeLSTM ({name})"
 
         use_res = hp.get("use_residual", True)
         model = Cls(n_in, hp["hidden"], hp["layers"], 0.1, len(ents), hp["emb"], residual=use_res)

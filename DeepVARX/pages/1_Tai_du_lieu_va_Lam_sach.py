@@ -141,7 +141,7 @@ with tab1:
 
         st.divider()
         train_ratio = st.slider("Tỷ lệ TRAIN (theo ngày — chung cho mọi tỉnh)", 0.5, 0.95,
-                                float(st.session_state.get("train_ratio", 0.80)), 0.05)
+                                float(st.session_state.get("train_ratio", 0.70)), 0.05)
         st.session_state["train_ratio"] = train_ratio
         te_ = train_end_from_ratio(master, pp["date_col"], train_ratio)
         st.caption(f"TRAIN đến hết ngày **{te_:%d/%m/%Y}**; sau mốc này là TEST cho **mọi** tỉnh (tránh rò rỉ chéo tỉnh).")
@@ -274,11 +274,18 @@ with tab3:
         proxy_df = entity_frame(clean, date_col, entity_col, proxy, [target] + final_x)
         reset_downstream("raw")
         
-        default_endog = [c for c in ["coffee_price_vn", "coffee_price_london_vnd", "coffee_price_arabica_vnd"] if c in clean.columns]
+        default_endog = [c for c in ["price_vnd_kg", "coffee_price_vn"] if c in clean.columns]
         if not default_endog:
             default_endog = [target]
-        default_exog = [c for c in ["coffee_inventory", "diesel_price_vnd_liter", "usd_vnd_rate", "is_harvest_season_vn", "is_harvest_season_brazil"]
-                        if c in clean.columns and c not in default_endog]
+        model2_exog_order = [
+            "ret_london", "ret_arabica", "ret_brent", "ret_dxy", "ret_usd_vnd",
+            "temp_mean", "precip_nasa", "humidity_air",
+            "london_price_usd_ton", "arabica_price_usd_lb", "brent_price_usd_barrel", "dxy_index", "usd_vnd_rate"
+        ]
+        default_exog = [c for c in model2_exog_order if c in clean.columns and c not in default_endog]
+        if not default_exog:
+            default_exog = [c for c in ["temp_mean", "precip_nasa", "humidity_air", "usd_vnd_rate"]
+                            if c in clean.columns and c not in default_endog]
 
         st.session_state.update(
             df_clean_panel=clean, df_clean=proxy_df, x_cols=final_x, train_end=train_end, proxy_province=proxy,

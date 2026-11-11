@@ -96,39 +96,39 @@ with st.expander("Hồ sơ minh chứng tổng hợp (Evidence Matrix)", expande
            .map(lambda v: "background-color:#e8daef" if v.startswith("Có") else "", subset=["Phi tuyến BDS"]))
     st.dataframe(sty, width="stretch", hide_index=True)
 
-# =============================================================================== PHẦN 2: Bộ 3 Biến Nội sinh (Y) & Danh sách Biến Ngoại sinh (X)
+# =============================================================================== PHẦN 2: Biến Nội sinh (Y) & Danh sách Biến Ngoại sinh (X)
 st.divider()
-st.subheader("1. Bộ 3 biến nội sinh (Y — Đều là Giá Cà Phê)")
-st.caption("Theo kế hoạch cải tiến mô hình, hệ thống sử dụng bộ 3 chuỗi giá cà phê tương hỗ làm các biến nội sinh:")
+st.subheader("1. Biến nội sinh (Y — Giá thu mua cà phê tại các vùng trọng điểm)")
+st.caption("Theo thiết kế chuẩn thực nghiệm của **DeepVAR 2 và LSTM 2**, hệ thống dự báo đồng thời giá thu mua cà phê Robusta tại các vùng trọng điểm Tây Nguyên (Đắk Lắk, Lâm Đồng, Gia Lai):")
 
 col_y1, col_y2, col_y3 = st.columns(3)
 with col_y1:
-    st.info("**Y₁: `coffee_price_vn`**\n\nGiá cà phê Robusta thu mua bình quân tại Việt Nam (VNĐ/kg) — **Biến mục tiêu trọng tâm cần dự báo**.")
+    st.info("**Đắk Lắk (Thủ phủ Robusta)**\n\nĐịa bàn trọng tâm sản xuất lớn nhất Việt Nam, dẫn dắt mặt bằng giá thu mua nội địa.")
 with col_y2:
-    st.info("**Y₂: `coffee_price_london_vnd`**\n\nGiá Robusta sàn ICE London quy đổi sang VNĐ/kg (`london_price_usd_ton * usd_vnd_rate / 1000`). Chuẩn quốc tế tham chiếu >95% hợp đồng.")
+    st.info("**Lâm Đồng (Robusta cao nguyên)**\n\nKhu vực cao nguyên trung tâm, phản ánh độ nhạy chất lượng và chế biến sâu.")
 with col_y3:
-    st.info("**Y₃: `coffee_price_arabica_vnd`**\n\nGiá Arabica sàn ICE New York quy đổi sang VNĐ/kg (`arabica_price_usd_lb * usd_vnd_rate / 0.45359237`). Tác động qua tỷ lệ phối trộn/thay thế.")
+    st.info("**Gia Lai (Bắc Tây Nguyên)**\n\nTrung tâm sản xuất quy mô lớn kết nối các tỉnh Tây Nguyên và duyên hải miền Trung.")
 
 all_panel_cols = list(panel.columns)
-planned_endog = ["coffee_price_vn", "coffee_price_london_vnd", "coffee_price_arabica_vnd"]
-available_endog = [c for c in planned_endog if c in all_panel_cols]
-if not available_endog:
-    available_endog = [target] if target in all_panel_cols else [c for c in all_panel_cols if "price" in c.lower()][:3]
+planned_endog = [c for c in ["price_vnd_kg", "coffee_price_vn"] if c in all_panel_cols]
+if not planned_endog:
+    planned_endog = [target] if target in all_panel_cols else [c for c in all_panel_cols if "price" in c.lower()][:1]
+available_endog = planned_endog
 
 c_y_btn1, c_y_btn2 = st.columns([2, 2])
-if c_y_btn1.button("🎯 Đặt lại Bộ 3 biến nội sinh đề xuất", help="Khôi phục mặc định: coffee_price_vn, coffee_price_london_vnd, coffee_price_arabica_vnd", use_container_width=True):
+if c_y_btn1.button("🎯 Đặt lại Biến nội sinh đề xuất (Giá thu mua cà phê)", help="Khôi phục mặc định: price_vnd_kg", use_container_width=True):
     st.session_state["chosen_endog"] = available_endog
     st.rerun()
 
 if "chosen_endog" not in st.session_state or not st.session_state["chosen_endog"]:
     st.session_state["chosen_endog"] = available_endog
 
-endog_options = list(dict.fromkeys(available_endog + [c for c in all_panel_cols if any(k in c.lower() for k in ["price", "gia", "vnd"]) and c != date_col and c != entity_col]))
+endog_options = list(dict.fromkeys(available_endog + [c for c in all_panel_cols if any(k in c.lower() for k in ["price", "gia", "vnd"]) and c not in (date_col, entity_col) and not c.endswith("_lag1") and not c.endswith("_lag2")]))
 chosen_endog = st.multiselect(
     "Danh sách biến nội sinh (Y) đưa vào hệ thống mô hình:",
     options=endog_options,
     default=[c for c in st.session_state["chosen_endog"] if c in endog_options],
-    help="Các biến nội sinh sẽ được dự báo đồng thời trong hệ thống VAR / DeepVAR. Biến đầu tiên là biến mục tiêu trọng tâm (Y₁)."
+    help="Các biến nội sinh sẽ được dự báo trong hệ thống VAR / VARX / DeepVAR / DeepVARX / LSTM. Biến đầu tiên là biến mục tiêu trọng tâm (Y₁)."
 )
 st.session_state["chosen_endog"] = chosen_endog
 if not chosen_endog:
@@ -138,22 +138,46 @@ else:
 
 # =============================================================================== PHẦN 3: Lựa chọn Biến Ngoại sinh (X)
 st.divider()
-st.subheader("2. Lựa chọn danh sách biến ngoại sinh (X) — Các nhân tố Vĩ mô & Thị trường")
-st.caption("Chọn các biến ngoại sinh bạn muốn đưa vào huấn luyện mô hình. Hệ thống sẽ cấp phát đồng nhất tập biến này "
-           "cho tất cả các mô hình có biến ngoại sinh (VARX, VARX-L, DeepVARX, LSTM). "
-           "**Lưu ý: Các biến nội sinh (chuỗi giá cà phê) đã được tách riêng ở Mục 1 và không nằm trong danh sách X này.**")
+st.subheader("2. Lựa chọn danh sách biến ngoại sinh (X) — Chuẩn Model 2 (11 biến)")
+st.caption("Chọn 8 biến ngoại sinh (3 biến thời tiết + 5 biến kinh tế) để kết hợp với 3 tỉnh tạo thành đúng **Bộ 11 biến tối ưu Model 2** cho toàn bộ các mô hình:")
 
-exclude_from_x = set(chosen_endog) | {"london_price_usd_ton", "arabica_price_usd_lb", "coffee_price_vnd_kg_raw", "coffee_price_vnd_kg",
-                                     "coffee_price_vn", "coffee_price_london_vnd", "coffee_price_arabica_vnd"}
-avail_x = [c for c in xcols if c not in exclude_from_x]
+exclude_from_x = set(chosen_endog) | {
+    "coffee_price_vnd_kg_raw", "coffee_price_vnd_kg", "coffee_price_vn", "lat", "lon",
+    "province_id", "is_benchmark", "is_imputed", "province_slug",
+    "ret_price", "ret_price_lag1", "ret_price_lag2", "price_vnd_kg_lag1"
+}
+avail_x = [c for c in xcols if c not in exclude_from_x and not c.startswith("ecm_") and not c.endswith("_lag1") and not c.endswith("_lag2")]
 
-planned_exog = ["coffee_inventory", "diesel_price_vnd_liter", "usd_vnd_rate", "is_harvest_season_vn", "is_harvest_season_brazil"]
-rec_exog = [c for c in planned_exog if c in avail_x]
+model2_optimal_exog_ret = [
+    "ret_london",
+    "ret_arabica",
+    "ret_brent",
+    "ret_dxy",
+    "ret_usd_vnd",
+    "temp_mean",
+    "precip_nasa",
+    "humidity_air",
+]
+model2_optimal_exog_lvl = [
+    "london_price_usd_ton",
+    "arabica_price_usd_lb",
+    "brent_price_usd_barrel",
+    "dxy_index",
+    "usd_vnd_rate",
+    "temp_mean",
+    "precip_nasa",
+    "humidity_air",
+]
+
+# Ưu tiên tập biến log-return chuẩn I(0) nếu có trong dữ liệu, nếu không dùng mức cấp 1
+rec_exog = [c for c in model2_optimal_exog_ret if c in avail_x]
+if len(rec_exog) < 5:
+    rec_exog = [c for c in model2_optimal_exog_lvl if c in avail_x]
 if not rec_exog:
-    rec_exog = [c for c in avail_x if (c in R.index and (R.loc[c, "gr_ok"] or R.loc[c, "ccf_ok"])) or "harvest" in c or "usd" in c][:5]
+    rec_exog = [c for c in ["temp_mean", "precip_nasa", "humidity_air", "usd_vnd_rate"] if c in avail_x]
 
 bx1, bx2, bx3, bx4 = st.columns(4)
-if bx1.button("🎯 Chọn bộ 5 biến ngoại sinh đề xuất", help="Khôi phục mặc định: coffee_inventory, diesel_price_vnd_liter, usd_vnd_rate, is_harvest_season_vn, is_harvest_season_brazil", use_container_width=True):
+if bx1.button("🎯 Chọn 8 biến tối ưu Model 2", help="Khôi phục mặc định 8 biến tối ưu thực nghiệm: 3 Thời tiết + 5 Kinh tế", use_container_width=True):
     st.session_state["chosen_x_features"] = rec_exog
     st.rerun()
 
