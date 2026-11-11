@@ -1,0 +1,21 @@
+Comparison,Scope,N_Time,HAC_Lag,DM_stat_HLN,p_one_sided_model_better,p_two_sided,Interpretation
+LSTM 1 (ens) vs Naive (RW),Panel_Daily_Agg (d_bar_t),542,5,-0.1625,0.564499,0.871002,Không khác biệt có ý nghĩa (p_2s >= 0.05)
+LSTM 1 (ens) vs Naive (RW),dak_lak,542,5,0.1642,0.434836,0.869672,Không có ý nghĩa
+LSTM 1 (ens) vs Naive (RW),lam_dong,542,5,-0.2953,0.616047,0.767906,Không có ý nghĩa
+LSTM 1 (ens) vs Naive (RW),gia_lai,542,5,-0.2554,0.600763,0.798473,Không có ý nghĩa
+LSTM 2 (ens) vs Naive (RW),Panel_Daily_Agg (d_bar_t),542,5,3.5999,0.000174,0.000348,"Model tốt hơn Bench (p_2s < 0.05, DM > 0)"
+LSTM 2 (ens) vs Naive (RW),dak_lak,542,5,3.3796,0.000389,0.000778,Model tốt hơn Bench
+LSTM 2 (ens) vs Naive (RW),lam_dong,542,5,3.475,0.000276,0.000552,Model tốt hơn Bench
+LSTM 2 (ens) vs Naive (RW),gia_lai,542,5,3.809,7.8e-05,0.000156,Model tốt hơn Bench
+LSTM 3 (ens) vs Naive (RW),Panel_Daily_Agg (d_bar_t),542,5,3.2259,0.000666,0.001332,"Model tốt hơn Bench (p_2s < 0.05, DM > 0)"
+LSTM 3 (ens) vs Naive (RW),dak_lak,542,5,3.0186,0.001329,0.002659,Model tốt hơn Bench
+LSTM 3 (ens) vs Naive (RW),lam_dong,542,5,3.1559,0.000845,0.001689,Model tốt hơn Bench
+LSTM 3 (ens) vs Naive (RW),gia_lai,542,5,3.3881,0.000378,0.000755,Model tốt hơn Bench
+LSTM 2 (ens) vs LSTM 1 (ens) [Đóng góp Thời tiết + KT cơ bản],Panel_Daily_Agg (d_bar_t),542,5,3.6141,0.000165,0.000329,"Model tốt hơn Bench (p_2s < 0.05, DM > 0)"
+LSTM 2 (ens) vs LSTM 1 (ens) [Đóng góp Thời tiết + KT cơ bản],dak_lak,542,5,3.381,0.000387,0.000774,Model tốt hơn Bench
+LSTM 2 (ens) vs LSTM 1 (ens) [Đóng góp Thời tiết + KT cơ bản],lam_dong,542,5,3.4952,0.000256,0.000513,Model tốt hơn Bench
+LSTM 2 (ens) vs LSTM 1 (ens) [Đóng góp Thời tiết + KT cơ bản],gia_lai,542,5,3.8949,5.5e-05,0.000111,Model tốt hơn Bench
+LSTM 3 (ens) vs LSTM 2 (ens) [Đóng góp Ngoại sinh mở rộng],Panel_Daily_Agg (d_bar_t),542,5,-2.8033,0.99738,0.00524,"Model KÉM hơn Bench (p_2s < 0.05, DM < 0)"
+LSTM 3 (ens) vs LSTM 2 (ens) [Đóng góp Ngoại sinh mở rộng],dak_lak,542,5,-3.0228,0.998688,0.002623,Model KÉM hơn Bench
+LSTM 3 (ens) vs LSTM 2 (ens) [Đóng góp Ngoại sinh mở rộng],lam_dong,542,5,-2.4902,0.993468,0.013065,Model KÉM hơn Bench
+LSTM 3 (ens) vs LSTM 2 (ens) [Đóng góp Ngoại sinh mở rộng],gia_lai,542,5,-2.5608,0.994644,0.010712,Model KÉM hơn Bench

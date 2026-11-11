@@ -1,0 +1,7 @@
+Model,Purpose,Num_Features,Rank,RMSE (VND),MAE (VND),MAPE (%),DA (%),NLL_cal (ret),CRPS (ret),CRPS-Sum,Cov80 (%),Cov95 (%),MPIW95 (VND),DM_p vs Naive,Avg_Epoch
+Naive (Random Walk Prob),"Chuẩn đối chứng P_hat_t = P_{t-1}, Cov tĩnh",1,3,1922.89,1201.63,1.119%,0.00%,-9.096,0.00865,0.02540,-,90.2%,5360,Benchmark,-
+DeepVAR-Level (Raw),Chẩn đoán: DeepVAR trực tiếp trên giá gốc P_t,3,2,15138.10,13396.47,11.916%,-,-,-,-,-,-,-,1.0000,-
+DeepVAR 1,Baseline xác suất thuần nội sinh (Giá quá khứ 3 tỉnh),3,2,1908.82 ± 1.7,1196.91 ± 1.5,1.116% ± 0.00%,51.64%,-9.297 ± 0.23,0.00857,0.02520,82.2%,92.0%,5868,0.0925,35.0
+DeepVAR 2,Multivariate Low-Rank DeepVAR (Giá + Thời tiết + Kinh tế),11,2,1603.82 ± 11.4,1031.35 ± 9.9,0.955% ± 0.01%,75.89%,-9.885 ± 0.05,0.00712,0.02084,75.8%,89.2%,4192,0.0000,18.2
+DeepVAR 2 (Diag),"Ablation hiệp phương sai đường chéo (rank=0, bỏ tương quan liên tỉnh)",11,0,1615.63 ± 14.8,1044.35 ± 11.4,0.968% ± 0.01%,76.25%,-8.721 ± 0.11,0.00737,0.02102,90.4%,97.2%,6806,0.0000,14.2
+DeepVAR 3,Full Exogenous DeepVAR (Giá + Toàn bộ biến ngoại sinh phù hợp),20,2,1662.56 ± 11.8,1052.87 ± 13.2,0.974% ± 0.01%,74.74%,-9.388 ± 0.12,0.00743,0.02179,74.6%,87.6%,4273,0.0000,15.6

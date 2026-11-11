@@ -1,0 +1,6 @@
+Model,Purpose,Num_Features,Seq_Len,RMSE (VND),MAE (VND),MAPE (%),R2_price,R2_ret,DA (%),RMSE_ret,DM_stat vs Naive,DM_p_1s vs Naive,DM_p_2s vs Naive,Avg_Best_Epoch
+Naive (Random Walk),P_hat_t = P_{t-1} (Chuẩn đối chứng),1,1,1922.89,1201.63,1.119%,0.9830,-0.0013,N/A (ΔP̂=0),0.01747,Benchmark,Benchmark,Benchmark,-
+LSTM-Level (Raw MLM),Chẩn đoán: dự báo trực tiếp mức giá P_t (MinMax),3,10,17370.43,15383.00,13.708%,-0.3896,-86.2435,50.57%,0.16304,-10.670,1.0000,0.0000,-
+LSTM 1,Baseline (Giá cà phê quá khứ),3,30,1925.40 ± 8.9,1210.56 ± 8.5,1.129% ± 0.01%,0.9829,-0.0061,52.43% ± 0.98%,0.01751,-0.143,0.5518,0.6688,11.2
+LSTM 2,Multivariate (Giá + Thời tiết + Kinh tế),11,10,1607.15 ± 6.9,1042.45 ± 9.9,0.966% ± 0.01%,0.9881,0.3008,76.32% ± 0.49%,0.01460,+3.542,0.0003,0.0005,13.6
+LSTM 3,Full Exogenous (Giá + Toàn bộ biến ngoại sinh phù hợp),20,10,1666.97 ± 10.8,1061.74 ± 11.0,0.982% ± 0.01%,0.9872,0.2528,74.78% ± 0.56%,0.01509,+3.165,0.0010,0.0021,13.0
