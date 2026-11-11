@@ -1,0 +1,26 @@
+Model,Exogenous_Variate,Mean_Attention_Weight,Temporal_Std
+DeepVARX 2,ret_london,0.4647,0.13122
+DeepVARX 2,ret_arabica,0.10405,0.05323
+DeepVARX 2,ret_brent,0.08512,0.04694
+DeepVARX 2,ret_dxy,0.07974,0.04071
+DeepVARX 2,precip_nasa,0.07066,0.03659
+DeepVARX 2,temp_mean,0.06952,0.03119
+DeepVARX 2,humidity_air,0.06567,0.03244
+DeepVARX 2,ret_usd_vnd,0.06054,0.03706
+DeepVARX 3,ret_london,0.47017,0.15123
+DeepVARX 3,ret_arabica,0.06934,0.05014
+DeepVARX 3,temp_mean,0.04157,0.02938
+DeepVARX 3,ret_dxy,0.03967,0.02434
+DeepVARX 3,ret_brent,0.03877,0.04008
+DeepVARX 3,ret_usd_vnd,0.03554,0.03195
+DeepVARX 3,wind_speed_2m,0.03302,0.03055
+DeepVARX 3,solar_radiation,0.0329,0.0221
+DeepVARX 3,is_harvest_season_vn,0.03163,0.02618
+DeepVARX 3,humidity_air,0.03032,0.02247
+DeepVARX 3,precip_nasa,0.02804,0.02319
+DeepVARX 3,sin_day_of_year,0.02802,0.01434
+DeepVARX 3,d_soil_moisture,0.02692,0.01977
+DeepVARX 3,is_harvest_season_brazil,0.02567,0.01322
+DeepVARX 3,ret_usd_brl,0.02501,0.01807
+DeepVARX 3,cos_day_of_year,0.02321,0.01083
+DeepVARX 3,exog_stale_days,0.0202,0.03385

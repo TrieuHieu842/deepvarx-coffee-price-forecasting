@@ -1,0 +1,3 @@
+Model,Spearman_Attn_vs_PermRMSE,p_Attn_vs_PermRMSE,Spearman_Attn_vs_GradSaliency,p_Attn_vs_GradSaliency
+DeepVARX 2,0.2619,0.5309,0.2619,0.5309
+DeepVARX 3,0.5417,0.0247,0.7623,0.0004

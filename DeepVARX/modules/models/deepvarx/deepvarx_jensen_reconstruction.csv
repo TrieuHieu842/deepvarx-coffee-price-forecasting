@@ -1,0 +1,16 @@
+Model,Reconstruction_Rule,RMSE (VND),MAE (VND),MAPE (%),Mean_Bias (hat-true VND),DM_vs_Median_stat,DM_vs_Median_p2s
+DeepVARX 1 (Ens),Median: P_{t-1}*exp(mu),1908.51,1196.29,1.1156,102.15,0.0,1.0000
+DeepVARX 1 (Ens),LogNormal Mean (sigma_raw): exp(mu+0.5*s2),1908.84,1196.52,1.1159,108.87,-0.945,0.3451
+DeepVARX 1 (Ens),LogNormal Mean (sigma_cal): exp(mu+0.5*s2),1909.06,1196.7,1.1161,112.99,-0.969,0.3330
+DeepVARX 1 (Ens),MC Sample Mean (Ensemble Pool),1907.32,1197.73,1.1171,116.11,0.411,0.6811
+DeepVARX 1 (Ens),Duan Non-Parametric Smearing (Val),1922.51,1214.17,1.1335,242.54,-2.21,0.0275
+DeepVARX 2 (Ens),Median: P_{t-1}*exp(mu),1663.76,1025.71,0.9519,126.46,0.0,1.0000
+DeepVARX 2 (Ens),LogNormal Mean (sigma_raw): exp(mu+0.5*s2),1664.15,1025.84,0.9521,129.51,-1.62,0.1059
+DeepVARX 2 (Ens),LogNormal Mean (sigma_cal): exp(mu+0.5*s2),1664.51,1026.01,0.9523,132.9,-1.775,0.0765
+DeepVARX 2 (Ens),MC Sample Mean (Ensemble Pool),1661.77,1025.63,0.9519,135.38,1.03,0.3033
+DeepVARX 2 (Ens),Duan Non-Parametric Smearing (Val),1668.19,1029.38,0.9555,171.99,-2.725,0.0066
+DeepVARX 3 (Ens),Median: P_{t-1}*exp(mu),1662.61,1034.2,0.9587,136.37,0.0,1.0000
+DeepVARX 3 (Ens),LogNormal Mean (sigma_raw): exp(mu+0.5*s2),1662.98,1034.42,0.9589,139.08,-2.09,0.0371
+DeepVARX 3 (Ens),LogNormal Mean (sigma_cal): exp(mu+0.5*s2),1663.4,1034.7,0.9592,142.48,-2.217,0.0270
+DeepVARX 3 (Ens),MC Sample Mean (Ensemble Pool),1666.13,1035.52,0.9599,141.21,-1.578,0.1152
+DeepVARX 3 (Ens),Duan Non-Parametric Smearing (Val),1663.25,1034.68,0.9592,143.82,-2.43,0.0154
