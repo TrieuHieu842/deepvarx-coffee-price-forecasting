@@ -1,5 +1,5 @@
 """Baseline tuyến tính: VAR (không X), VARX (có X), VARX-L (VARX + phạt Lasso/Ridge).
-Cài đặt kết nối trực tiếp với var_model.py và varx_model.py.
+Cài đặt kết nối trực tiếp với utils.var_model (VARModel) và utils.varx_model (VARXModel).
 Dự báo 1 bước (rolling one-step-ahead) trên đoạn TEST, rồi quy đổi về mức giá gốc."""
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ import numpy as np
 import pandas as pd
 
 from modules.data_utils import difference, reconstruct_level
-from modules.models.var_model import VARModel
-from modules.models.varx_model import VARXModel
+from utils.var_model import VARModel
+from utils.varx_model import VARXModel
 
 
 def _design(endog: np.ndarray, exog: np.ndarray | None, p: int, q: int, m: int):
@@ -127,7 +127,7 @@ def run_local_pkg(g: pd.DataFrame, date_col: str, target: str, feats: list[str],
     lvl = g["y_level"].to_numpy(float)
 
     if exog is None or exog.shape[1] == 0:
-        # Trường hợp VAR: Gọi trực tiếp VARModel từ modules/models/var_model.py
+        # Trường hợp VAR: Gọi trực tiếp VARModel từ utils/var_model.py
         mdl = VARModel(lags=p, trend="c")
         tr_df = pd.DataFrame(endog[:rows_end], columns=endog_names)
         te_df = pd.DataFrame(endog[rows_end:], columns=endog_names)
@@ -136,7 +136,7 @@ def run_local_pkg(g: pd.DataFrame, date_col: str, target: str, feats: list[str],
         gi = np.arange(rows_end, n) + off
         y_pred = reconstruct_level(lvl, gi, d, pred_te)
     else:
-        # Trường hợp VARX / VARX-L: Gọi trực tiếp VARXModel từ modules/models/varx_model.py
+        # Trường hợp VARX / VARX-L: Gọi trực tiếp VARXModel từ utils/varx_model.py
         penalty = "lasso" if (lasso_alpha is not None and lasso_alpha > 0) else "none"
         alpha = float(lasso_alpha) if lasso_alpha is not None else 0.0
         mdl = VARXModel(p=p, q=max(1, q), penalty=penalty, alpha=alpha, trend="c", exog_lag_mode="past_only")

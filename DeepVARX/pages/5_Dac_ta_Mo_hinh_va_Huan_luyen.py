@@ -18,8 +18,8 @@ importlib.reload(modules.models.lstm_attention)
 
 from modules.data_utils import difference, metrics
 from modules.model_specs import ORDER, PROFILES, allocation
-from modules.models.var_model import VARModel
-from modules.models.varx_model import VARXModel
+from utils.var_model import VARModel
+from utils.varx_model import VARXModel
 from modules.models.deepvar import DeepVAR, DeepVARConfig
 from modules.models.baseline_varx import run_local_pkg, select_order
 from modules.ui import require, setup_page
@@ -190,7 +190,7 @@ if run:
     log(f"$ train --model {name} --scope {alloc['scope']} --data \"{alloc['label']}\"")
     out = {"scope": alloc["scope"], "feats": alloc["feats"], "hp": hp, "history": None, "attn": None}
     if is_linear:
-        src_info = "modules.models.var_model.VARModel" if name == "VAR" else "modules.models.varx_model.VARXModel"
+        src_info = "utils.var_model.VARModel" if name == "VAR" else "utils.varx_model.VARXModel"
         log(f"[nạp mô hình] {src_info} (Huấn luyện {len(ents)} tỉnh theo cơ chế Local)")
         preds, models = [], {}
         for i, e in enumerate(ents, 1):
