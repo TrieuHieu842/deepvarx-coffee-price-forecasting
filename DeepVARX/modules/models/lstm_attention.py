@@ -52,13 +52,14 @@ class LSTMForecaster(nn.Module):
     has_attention = False
 
     def __init__(self, n_in: int, hidden: int = 64, layers: int = 1, dropout: float = 0.1,
-                 n_prov: int = 0, emb_dim: int = 0, residual: bool = True):
+                 n_prov: int = 0, emb_dim: int = 0, residual: bool = True, n_out: int = 1):
         super().__init__()
         self.residual = residual
         self.embed = ProvinceEmbedding(n_prov, emb_dim)
         self.lstm = nn.LSTM(n_in + self.embed.dim, hidden, num_layers=layers, batch_first=True,
                             dropout=dropout if layers > 1 else 0.0)
-        self.head = nn.Linear(hidden, 1)
+        self.n_out = int(n_out)
+        self.head = nn.Linear(hidden, self.n_out)
         if self.residual:
             nn.init.zeros_(self.head.weight)
             nn.init.zeros_(self.head.bias)
@@ -66,7 +67,7 @@ class LSTMForecaster(nn.Module):
     def forward(self, x: torch.Tensor, pid=None, return_attention: bool = False):
         h, _ = self.lstm(self.embed(x, pid))
         delta = self.head(h[:, -1])
-        return (x[:, -1, 0:1] + delta) if self.residual else delta
+        return (x[:, -1, :self.n_out] + delta) if self.residual else delta
 
 
 class LSTMAttentionForecaster(nn.Module):
@@ -75,14 +76,15 @@ class LSTMAttentionForecaster(nn.Module):
     has_attention = True
 
     def __init__(self, n_in: int, hidden: int = 64, layers: int = 1, dropout: float = 0.1,
-                 n_prov: int = 0, emb_dim: int = 0, residual: bool = True):
+                 n_prov: int = 0, emb_dim: int = 0, residual: bool = True, n_out: int = 1):
         super().__init__()
         self.residual = residual
         self.embed = ProvinceEmbedding(n_prov, emb_dim)
         self.lstm = nn.LSTM(n_in + self.embed.dim, hidden, num_layers=layers, batch_first=True,
                             dropout=dropout if layers > 1 else 0.0)
         self.temporal = TemporalAttention(hidden)
-        self.head = nn.Linear(2 * hidden, 1)
+        self.n_out = int(n_out)
+        self.head = nn.Linear(2 * hidden, self.n_out)
         if self.residual:
             nn.init.zeros_(self.head.weight)
             nn.init.zeros_(self.head.bias)
@@ -91,7 +93,7 @@ class LSTMAttentionForecaster(nn.Module):
         h, _ = self.lstm(self.embed(x, pid))
         ctx, beta = self.temporal(h)
         delta = self.head(torch.cat([ctx, h[:, -1]], dim=-1))
-        out = (x[:, -1, 0:1] + delta) if self.residual else delta
+        out = (x[:, -1, :self.n_out] + delta) if self.residual else delta
         if return_attention:
             return out, None, beta
         return out

@@ -5,19 +5,29 @@ import streamlit as st
 
 from modules.data_utils import difference
 from modules.stat_tests import (adf_kpss, ccf_prewhitened, granger_hc1, integration_order, johansen_rank,
-                             summarize_ccf, summarize_granger)
+                                summarize_ccf, summarize_granger)
 from modules.ui import fmt_p, require, reset_downstream, setup_page, step_box
 
 setup_page("2 · Kiểm định tuyến tính")
 st.title("Trang 2 · Kiểm định tuyến tính (Luồng 1)")
-st.caption("Dữ liệu đầu vào: chuỗi của **tỉnh đại diện**. Thu thập bằng chứng tuyến tính (bậc d, CCF, Granger, Johansen → VAR hay VECM). "
-           "Việc chọn biến vào Tập Cơ Sở được chốt ở **Trang 4**.")
-require(["df_clean", "df_clean_panel", "x_cols", "train_n", "target"], "Chưa có dữ liệu sạch. Hãy hoàn tất **Trang 1** và bấm *Chốt dữ liệu sạch*.")
+require(["df_clean", "df_clean_panel", "x_cols", "train_n", "target", "panel_meta"],
+        "Chưa có dữ liệu sạch. Hãy hoàn tất **Trang 1** và bấm *Chốt dữ liệu sạch*.")
 
 df = st.session_state["df_clean"]
+pm = st.session_state["panel_meta"]
+is_wide = pm.get("mode") == "wide"
 target = st.session_state["target"]
+endog_cols = pm.get("endog_cols") or [target]
+endog_labels = pm.get("endog_labels") or {}
 xcols = st.session_state["x_cols"]
 train_n = st.session_state["train_n"]
+
+if is_wide:
+    st.caption(f"Dữ liệu đầu vào: bảng rộng đa tỉnh (**{len(endog_cols)}** biến nội sinh Y, trọng tâm Y₁ = **{endog_labels.get(target, target)}**). "
+               "Thu thập bằng chứng tuyến tính (bậc d, CCF, Granger, Johansen → VAR hay VECM).")
+else:
+    st.caption("Dữ liệu đầu vào: chuỗi của **tỉnh đại diện**. Thu thập bằng chứng tuyến tính (bậc d, CCF, Granger, Johansen → VAR hay VECM). "
+               "Việc chọn biến vào Tập Cơ Sở được chốt ở **Trang 4**.")
 
 with st.expander("Tham số kiểm định", expanded=False):
     p1, p2, p3, p4 = st.columns(4)
@@ -72,14 +82,14 @@ tab1, tab2, tab3 = st.tabs(["Bậc tích hợp & Tính dừng", "Độ trễ d�
 
 # =============================================================================== TAB 1
 with tab1:
-    step_box("Chạy song song <b>ADF</b> (H0: có nghiệm đơn vị) và <b>KPSS</b> (H0: dừng) trên đoạn TRAIN.\n " 
+    step_box("Chạy song song <b>ADF</b> (H0: có nghiệm đơn vị) và <b>KPSS</b> (H0: dừng) trên đoạn TRAIN.\n "
              "Chuỗi “Dừng” khi ADF bác bỏ và KPSS không bác bỏ \n. <b>Bắt buộc chốt một bậc d chung</b> cho toàn hệ thống.")
     lv = df.iloc[:train_n]
     stn = run_stationarity(lv, alpha)
     show = stn.copy()
     for col in ["ADF p (d=0)", "KPSS p (d=0)", "ADF p (d=1)", "KPSS p (d=1)"]:
         show[col] = show[col].map(fmt_p)
-    planned_endog_set = {"price_vnd_kg", "coffee_price_vn", "ret_price"}
+    planned_endog_set = set(endog_cols) | {"price_vnd_kg", "coffee_price_vn", "ret_price"}
     show.insert(1, "Vai trò", [("Y₁ (Mục tiêu)" if b == target else ("Y (Nội sinh)" if b in planned_endog_set else "X")) for b in show["Biến"]])
     st.dataframe(show, width="stretch", hide_index=True)
 
@@ -114,13 +124,16 @@ with tab2:
     step_box(f"Lọc <b>cả X và Y</b> qua cùng một bộ lọc AR khớp trên X (tiền trắng hoá) rồi tính CCF trên dữ liệu "
              f"sai phân bậc d = {d} (TRAIN). Lag k &gt; 0: X<sub>t-k</sub> dẫn trước Y<sub>t</sub>. "
              "Ngưỡng hiệu chuẩn Bonferroni theo số lag.")
-    ccf_tab, ccf_all = run_ccf(dtr, target, xcols, int(max_lag_ccf), alpha, int(ar_max))
-    view = ccf_tab.copy()
-    view["CCF đạt"] = np.where(view["CCF đạt"], "✅", "–")
-    st.dataframe(view.style.format({"CCF tại lag đó": "{:.3f}", "Ngưỡng Bonferroni": "{:.3f}"}),
-                 width="stretch", hide_index=True)
+    if not xcols:
+        ccf_tab, ccf_all = pd.DataFrame(), {}
+        st.info("Không có biến ngoại sinh X.")
+    else:
+        ccf_tab, ccf_all = run_ccf(dtr, target, xcols, int(max_lag_ccf), alpha, int(ar_max))
+        view = ccf_tab.copy()
+        view["CCF đạt"] = np.where(view["CCF đạt"], "✅", "–")
+        st.dataframe(view.style.format({"CCF tại lag đó": "{:.3f}", "Ngưỡng Bonferroni": "{:.3f}"}),
+                     width="stretch", hide_index=True)
 
-    if xcols:
         pick = st.selectbox("Vẽ CCF cho biến", xcols)
         if pick and pick in ccf_all:
             tb = ccf_all[pick]
@@ -139,25 +152,29 @@ with tab2:
 with tab3:
     step_box("<b>Granger</b>: Wald F-test với sai số chuẩn <b>HC1</b>. Cho phép chọn giữa <b>p thô &lt; α</b> (tiêu chuẩn nghiên cứu thực nghiệm, "
              "tránh bỏ sót biến do hiệu chỉnh quá khắt khe) hoặc <b>Bonferroni</b> (nghiêm ngặt). <b>Johansen</b> xác định có dùng VECM hay không.")
-    gr_tab, gr_all = run_granger(dtr, target, xcols, int(max_lag_gc), alpha)
-    
-    c_gr1, c_gr2 = st.columns([3, 1])
+    c_gr1, _ = st.columns([3, 1])
     gr_criterion = c_gr1.radio("Tiêu chí kết luận Granger đạt",
-                              ["p thô < α (Khuyên dùng — tránh bỏ sót biến quan trọng)",
-                               "p Bonferroni < α (Nghiêm ngặt)"],
-                              horizontal=True, index=0)
+                               ["p thô < α (Khuyên dùng — tránh bỏ sót biến quan trọng)",
+                                "p Bonferroni < α (Nghiêm ngặt)"],
+                               horizontal=True, index=0)
     use_raw_gr = gr_criterion.startswith("p thô")
-    gr_pass_mask = (gr_tab["p thô"] < alpha) if use_raw_gr else gr_tab["Granger đạt"]
-    
-    gv = gr_tab.copy()
-    gv["Granger đạt"] = np.where(gr_pass_mask, "✅", "–")
-    gv["Phản hồi 2 chiều"] = np.where(gv["Phản hồi 2 chiều"], "⚠️ Có", "–")
-    for col in ["p thô", "p Bonferroni", "p Bonf. (Y→X)"]:
-        gv[col] = gv[col].map(fmt_p)
-    st.dataframe(gv.style.format({"F": "{:.2f}"}), width="stretch", hide_index=True)
-    st.caption("Lưu ý: Granger đo quan hệ dự báo tuyến tính. Tiêu chí mặc định **p thô < α** giúp các biến ngoại sinh quan trọng không bị loại sớm trước khi sang Trang 3 & 4.")
-    with st.expander("Chi tiết p-value theo từng lag"):
-        if xcols:
+
+    if not xcols:
+        gr_tab, gr_all = pd.DataFrame(), {}
+        gr_pass_mask = pd.Series(dtype=bool)
+        st.info("Không có biến ngoại sinh X.")
+    else:
+        gr_tab, gr_all = run_granger(dtr, target, xcols, int(max_lag_gc), alpha)
+        gr_pass_mask = (gr_tab["p thô"] < alpha) if use_raw_gr else gr_tab["Granger đạt"]
+
+        gv = gr_tab.copy()
+        gv["Granger đạt"] = np.where(gr_pass_mask, "✅", "–")
+        gv["Phản hồi 2 chiều"] = np.where(gv["Phản hồi 2 chiều"], "⚠️ Có", "–")
+        for col in ["p thô", "p Bonferroni", "p Bonf. (Y→X)"]:
+            gv[col] = gv[col].map(fmt_p)
+        st.dataframe(gv.style.format({"F": "{:.2f}"}), width="stretch", hide_index=True)
+        st.caption("Lưu ý: Granger đo quan hệ dự báo tuyến tính. Tiêu chí mặc định **p thô < α** giúp các biến ngoại sinh quan trọng không bị loại sớm trước khi sang Trang 3 & 4.")
+        with st.expander("Chi tiết p-value theo từng lag"):
             gp = st.selectbox("Biến", xcols, key="gc_pick")
             if gp and gp in gr_all:
                 fw, bw = gr_all[gp]
@@ -185,22 +202,27 @@ with tab3:
             return pd.DataFrame(pair), system
 
         try:
-            sys_vars = [c for c, ok in zip(xcols, gr_pass_mask) if ok][:6]
-            if not sys_vars:
+            sys_vars = [c for c, ok in zip(xcols, gr_pass_mask) if ok][:6] if len(xcols) else []
+            if not sys_vars and "CCF đạt" in ccf_tab:
                 sys_vars = [c for c, ok in zip(xcols, ccf_tab["CCF đạt"]) if ok][:6]
             if not sys_vars:
                 sys_vars = xcols[:4]
             jt, system = run_johansen(df.iloc[:train_n], target, xcols, sys_vars, int(k_diff))
-            johansen_r = dict(zip(jt["Cặp (Y, X)"], jt["Hạng r (trace)"]))
-            st.markdown("**Theo từng cặp (Y, X)**")
-            st.dataframe(jt.style.format({"Trace stat (r=0)": "{:.2f}", "Trace crit 95%": "{:.2f}"}), width="stretch",
-                         hide_index=True)
+            if len(jt):
+                johansen_r = dict(zip(jt["Cặp (Y, X)"], jt["Hạng r (trace)"]))
+                st.markdown("**Theo từng cặp (Y, X)**")
+                st.dataframe(jt.style.format({"Trace stat (r=0)": "{:.2f}", "Trace crit 95%": "{:.2f}"}), width="stretch",
+                             hide_index=True)
             if system is not None:
                 rank_sys = int(system["rank_trace"])
                 st.markdown(f"**Hệ biến Y + {len(sys_vars)} biến qua Granger** ({', '.join(sys_vars)}): hạng r (trace) = **{rank_sys}**")
             else:
                 rank_sys = int(max(johansen_r.values(), default=0))
                 st.caption("Chưa có biến nào qua Granger → quyết định dựa trên kết quả theo cặp.")
+            if is_wide and len(endog_cols) >= 2:
+                r_endog = johansen_rank(df.iloc[:train_n][endog_cols].to_numpy(), 0, int(k_diff))
+                st.caption(f"Đồng liên kết nội bộ giữa {len(endog_cols)} tỉnh nội sinh ({', '.join(endog_labels.get(c, c) for c in endog_cols)}): "
+                           f"hạng r (trace) = **{int(r_endog['rank_trace'])}**.")
             vecm_hint = rank_sys > 0
             base_model = "VECM" if vecm_hint else "VAR"
         except Exception as e:
@@ -221,26 +243,47 @@ def run_granger_panel(clean: pd.DataFrame, date_col_: str, entity_col_: str, tar
     for e, g in clean.groupby(entity_col_, observed=True, sort=False):
         g_indexed = g.set_index(date_col_).sort_index()
         f = difference(g_indexed[[target_] + xcols_], d_)
-        is_tr = pd.to_datetime(f.index) <= te
-        f = f[is_tr]
+        f = f[pd.to_datetime(f.index) <= te]
         rows[str(e)] = {c: bool((summarize_granger(granger_hc1(f[target_].to_numpy(), f[c].to_numpy(), max_lag_), alpha_)["p_raw"] < alpha_) if use_raw_
                                 else summarize_granger(granger_hc1(f[target_].to_numpy(), f[c].to_numpy(), max_lag_), alpha_)["pass"])
                         for c in xcols_}
     return pd.DataFrame(rows)
 
 
+@st.cache_data(show_spinner="Đang chạy Granger cho từng tỉnh nội sinh…")
+def run_granger_wide(wide_df: pd.DataFrame, endog_cols_: list, endog_labels_: dict, xcols_: list, d_: int,
+                     train_end_, max_lag_: int, alpha_: float, use_raw_: bool = True) -> pd.DataFrame:
+    rows = {}
+    te = pd.Timestamp(train_end_)
+    for ecol in endog_cols_:
+        f = difference(wide_df[[ecol] + xcols_], d_)
+        f = f[pd.to_datetime(f.index) <= te]
+        lbl = endog_labels_.get(ecol, ecol)
+        rows[lbl] = {c: bool((summarize_granger(granger_hc1(f[ecol].to_numpy(), f[c].to_numpy(), max_lag_), alpha_)["p_raw"] < alpha_) if use_raw_
+                             else summarize_granger(granger_hc1(f[ecol].to_numpy(), f[c].to_numpy(), max_lag_), alpha_)["pass"])
+                     for c in xcols_}
+    return pd.DataFrame(rows)
+
+
 st.divider()
 st.subheader("Nhất quán giữa các tỉnh")
-panel = st.session_state["df_clean_panel"]
-pm = st.session_state["panel_meta"]
-gp = run_granger_panel(panel, pm["date_col"], pm["entity_col"], target, xcols, int(d), st.session_state["train_end"],
-                       int(max_lag_gc), alpha, use_raw_gr)
-cons = gp.sum(axis=1) if len(gp) else pd.Series(0, index=xcols)
-cons_view = gp.replace({True: "✅", False: "–"})
-n_p = gp.shape[1] if gp.shape[1] else 1
-if gp.shape[1] > 0:
-    cons_view.insert(0, "Số tỉnh đạt", cons.astype(int).astype(str) + f"/{n_p}")
-st.dataframe(cons_view, width="stretch")
+if xcols:
+    if is_wide:
+        gp = run_granger_wide(df, endog_cols, endog_labels, xcols, int(d), st.session_state["train_end"],
+                              int(max_lag_gc), alpha, use_raw_gr)
+    else:
+        panel = st.session_state["df_clean_panel"]
+        gp = run_granger_panel(panel, pm["date_col"], pm["entity_col"], target, xcols, int(d),
+                               st.session_state["train_end"], int(max_lag_gc), alpha, use_raw_gr)
+    cons = gp.sum(axis=1) if len(gp) else pd.Series(0, index=xcols)
+    cons_view = gp.replace({True: "✅", False: "–"})
+    n_p = gp.shape[1] if gp.shape[1] else 1
+    if gp.shape[1] > 0:
+        cons_view.insert(0, "Số tỉnh đạt", cons.astype(int).astype(str) + f"/{n_p}")
+    st.dataframe(cons_view, width="stretch")
+else:
+    cons = pd.Series(0, index=xcols)
+    n_p = len(endog_cols) if is_wide else 1
 
 # =============================================================================== BẰNG CHỨNG
 st.divider()
@@ -251,7 +294,7 @@ ev = pd.DataFrame({
     "CCF đạt": ccf_tab["CCF đạt"].to_numpy() if "CCF đạt" in ccf_tab else False,
     "p Granger (thô)": gr_tab["p thô"].to_numpy() if "p thô" in gr_tab else np.nan,
     "p Granger (Bonferroni)": gr_tab["p Bonferroni"].to_numpy() if "p Bonferroni" in gr_tab else np.nan,
-    "Granger đạt": gr_pass_mask.to_numpy(),
+    "Granger đạt": gr_pass_mask.to_numpy() if len(gr_pass_mask) else np.zeros(len(xcols), dtype=bool),
     "Phản hồi 2 chiều": gr_tab["Phản hồi 2 chiều"].to_numpy() if "Phản hồi 2 chiều" in gr_tab else False,
     "r Johansen": [johansen_r.get(c, np.nan) for c in xcols],
     "Số tỉnh Granger đạt": cons.reindex(xcols).fillna(0).astype(int).to_numpy(),

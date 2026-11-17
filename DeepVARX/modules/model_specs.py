@@ -11,7 +11,7 @@ PROFILES = {
         "pros": ["Đơn giản, dễ diễn giải", "Lý thuyết thống kê hoàn thiện"],
         "cons": ["Phân rã nhanh khi số biến tăng (Curse of Dimensionality)", "Chỉ nắm bắt quan hệ tuyến tính",
                  "Không dùng biến ngoại sinh"],
-        "impl": "OLS trên chuỗi giá đã sai phân bậc d, chạy RIÊNG TỪNG TỈNH (Local); dự báo 1 bước rồi quy đổi về VNĐ/kg.",
+        "impl": "OLS trên chuỗi giá đã sai phân bậc d, chạy RIÊNG TỪNG TỈNH (Local) hoặc đồng thời K tỉnh ở chế độ Wide; dự báo 1 bước rồi quy đổi về VNĐ/kg.",
     },
     "VARX": {
         "title": "VARX (VAR with Exogenous Variables)", "family": "linear",
@@ -19,7 +19,7 @@ PROFILES = {
         "use": "Đánh giá tác động tuyến tính của biến ngoại sinh đã được Granger xác nhận.",
         "pros": ["Khai thác thông tin vĩ mô, thời tiết (X)"],
         "cons": ["Nhạy cảm với đa cộng tuyến", "Dễ overfit nếu chọn sai biến X"],
-        "impl": "Chạy riêng từng tỉnh. Dùng j = 1..q (không dùng X_t) để dự báo 1 bước không cần X tương lai. Nếu Johansen cho r > 0 (VECM), thêm số hạng hiệu chỉnh sai số ECT = β′Z_t (β từ Johansen, ước lượng trên TRAIN của từng tỉnh).",
+        "impl": "Dùng j = 1..q (không dùng X_t) để dự báo 1 bước không cần X tương lai. Nếu Johansen cho r > 0 (VECM), thêm số hạng hiệu chỉnh sai số ECT = β′Z_t (β từ Johansen, ước lượng trên TRAIN).",
     },
     "VARX-L": {
         "title": "VARX-L (VARX với Lasso Regularization)", "family": "linear",
@@ -27,7 +27,7 @@ PROFILES = {
         "use": "Tự động chọn lọc đặc trưng (Feature Selection) trong không gian nhiều biến.",
         "pros": ["Ép trọng số các biến nhiễu về 0", "Giải quyết tốt đa cộng tuyến"],
         "cons": ["Phải chọn hệ số phạt λ", "Hệ số bị co (thiên lệch) nên khó đọc như OLS"],
-        "impl": "Lasso (sklearn) trên đặc trưng đã chuẩn hoá, chạy RIÊNG TỪNG TỈNH (Local); λ = hệ số phạt bên dưới.",
+        "impl": "Lasso / MultiTaskLasso (sklearn), chạy Local theo tỉnh (Panel) hoặc đồng thời K tỉnh (Wide); λ = hệ số phạt bên dưới.",
     },
     "LSTM": {
         "title": "LSTM (Long Short-Term Memory)", "family": "deep",
@@ -36,7 +36,7 @@ PROFILES = {
         "use": "Cơ chế cổng (Forget, Input, Output) kiểm soát luồng thông tin theo thời gian.",
         "pros": ["Nắm bắt phụ thuộc dài hạn", "Không cần dữ liệu phải dừng hoá"],
         "cons": ["Hộp đen (Black-box), khó giải thích biến nào đóng góp nhiều nhất"],
-        "impl": "Global: một mạng huấn luyện 1 lần trên toàn panel, nhận chuỗi (Y + X) trượt theo thời gian + embedding tỉnh. Không có Attention.",
+        "impl": "Một mạng nhận chuỗi (Y + X) trượt theo thời gian (Panel: + embedding tỉnh; Wide: dự báo đồng thời K tỉnh). Không có Attention mặc định.",
     },
     "DeepVAR": {
         "title": "DeepVAR", "family": "deep",
@@ -56,13 +56,14 @@ PROFILES = {
         "pros": ["Xử lý dữ liệu thô phức tạp, bắt được phi tuyến",
                  "Attention giúp giải thích biến nào được “chú ý” khi nào (giảm tính hộp đen)"],
         "cons": ["Cần nhiều dữ liệu và siêu tham số", "Trọng số Attention là gợi ý diễn giải, không phải bằng chứng nhân quả"],
-        "impl": "Global (1 lần trên toàn panel) + embedding tỉnh. α: gate theo biến (mỗi bước thời gian); β: attention theo thời gian trên trạng thái ẩn LSTM.",
+        "impl": "Nhận đồng thời toàn bộ biến Y + X. α: gate theo biến (mỗi bước thời gian); β: attention theo thời gian trên trạng thái ẩn LSTM.",
     },
 }
 
 
-def allocation(name: str, base: list[str], ext: list[str], endog_cols: list[str] | None = None, **kwargs) -> dict:
-    """Dữ liệu cấp phát: tập biến (nội sinh bổ sung + ngoại sinh X) và phạm vi huấn luyện (Local theo tỉnh / Global toàn panel)."""
+def allocation(name: str, base: list[str], ext: list[str], endog_cols: list[str] | None = None,
+               mode: str = "panel", **kwargs) -> dict:
+    """Dữ liệu cấp phát: tập biến (nội sinh bổ sung + ngoại sinh X) và phạm vi huấn luyện."""
     if endog_cols is None and "endog_cols" in kwargs:
         endog_cols = kwargs["endog_cols"]
     other_endog = [c for c in endog_cols[1:]] if (endog_cols and len(endog_cols) > 1) else []
@@ -75,4 +76,6 @@ def allocation(name: str, base: list[str], ext: list[str], endog_cols: list[str]
         "DeepVARX": ("Mô hình học sâu DeepVARX (Y + X)", "C", list(other_endog + [c for c in ext if c not in other_endog]), "global"),
     }
     label, pkg, feats, scope = table[name]
+    if mode == "wide":
+        scope = "wide"
     return {"label": label, "pkg": pkg, "feats": feats, "scope": scope}

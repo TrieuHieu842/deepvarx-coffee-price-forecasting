@@ -18,7 +18,7 @@ _EV = ["evidence_lin", "evidence_nl", "base_set", "ext_set", "ext_sources", "pac
        "results", "base_model", "johansen_rank"]
 DOWNSTREAM = {
     "raw": ["df_clean_panel", "df_clean", "x_cols", "train_n", "train_end", "proxy_province", "removal_log", "d",
-            "vecm_hint"] + _EV,
+            "vecm_hint", "endog_cols", "chosen_endog", "exog_cols", "chosen_x_features"] + _EV,
     "df_clean": ["d", "vecm_hint"] + _EV,
     "base_set": ["ext_set", "ext_sources", "packages", "pkg_meta", "export_paths", "results"],
 }
@@ -39,14 +39,22 @@ def setup_page(title: str, icon: str = "☕") -> None:
 def sidebar_status() -> None:
     with st.sidebar:
         st.markdown("### Tiến độ")
+        is_wide = st.session_state.get("data_mode") == "wide"
         for key, label in STEPS:
             done = st.session_state.get(key) is not None
-            st.markdown(f"{'✅' if done else '⬜'} {label}")
+            shown = "Trang 1 · Dữ liệu sạch (đa biến)" if (is_wide and key == "df_clean_panel") else label
+            st.markdown(f"{'✅' if done else '⬜'} {shown}")
         if st.session_state.get("df_master") is not None:
             st.divider()
-            st.caption(f"Y: **{st.session_state.get('target')}** · {len(st.session_state.get('ds_tinh') or [])} tỉnh")
-            if st.session_state.get("proxy_province"):
-                st.caption(f"Tỉnh đại diện: **{st.session_state['proxy_province']}**")
+            if is_wide:
+                n_y = len(st.session_state.get("endog_cols") or [])
+                st.caption(f"Dạng Wide · Y₁: **{st.session_state.get('target')}** · {n_y} cột nội sinh")
+                if st.session_state.get("x_cols") is not None:
+                    st.caption(f"Ngoại sinh khả dụng: {len(st.session_state['x_cols'])} biến")
+            else:
+                st.caption(f"Y: **{st.session_state.get('target')}** · {len(st.session_state.get('ds_tinh') or [])} tỉnh")
+                if st.session_state.get("proxy_province"):
+                    st.caption(f"Tỉnh đại diện: **{st.session_state['proxy_province']}**")
             if st.session_state.get("base_set") is not None:
                 st.caption(f"Tập Cơ Sở: {len(st.session_state['base_set'])} biến")
             if st.session_state.get("ext_set") is not None:

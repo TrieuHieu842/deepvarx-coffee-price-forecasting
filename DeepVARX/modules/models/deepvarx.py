@@ -22,14 +22,14 @@ except Exception:
     CoffeeDeepVARX = None
 
 
-
 class DeepVARX(nn.Module):
     has_attention = True
 
     def __init__(self, n_in: int, hidden: int = 48, layers: int = 1, dropout: float = 0.0,
-                 n_prov: int = 0, emb_dim: int = 0, residual: bool = True):
+                 n_prov: int = 0, emb_dim: int = 0, residual: bool = True, n_out: int = 1):
         super().__init__()
         self.n_in = n_in
+        self.n_out = int(n_out)
         self.residual = residual
         # 1. Variable Gating với khởi tạo 0: lúc đầu alpha = 1/V đồng nhất, không làm méo tín hiệu gốc
         self.var_gate = nn.Linear(n_in, n_in)
@@ -42,7 +42,7 @@ class DeepVARX(nn.Module):
         self.temporal = TemporalAttention(hidden)
 
         # 2. Residual Head: Linear trực tiếp không qua dropout để đảm bảo gradient truyền thẳng về LSTM
-        self.head = nn.Linear(2 * hidden, 1)
+        self.head = nn.Linear(2 * hidden, self.n_out)
         if self.residual:
             # Khởi tạo trọng số tầng output bằng 0: tại Epoch 0 mô hình trùng khớp Naive Benchmark
             nn.init.zeros_(self.head.weight)
@@ -54,7 +54,7 @@ class DeepVARX(nn.Module):
         ctx, beta = self.temporal(h)
         delta = self.head(torch.cat([ctx, h[:, -1]], dim=-1))
         if self.residual:
-            base_prev = x[:, -1, 0:1]
+            base_prev = x[:, -1, :self.n_out]
             out = base_prev + delta
         else:
             out = delta
@@ -134,6 +134,7 @@ def train_model(model: nn.Module, data: dict, epochs: int = 60, lr: float = 3e-4
     Xva, yva = torch.tensor(data["Xva"]), torch.tensor(data["yva"])
     Xte = torch.tensor(data["Xte"])
     P = {k: (torch.tensor(data[k], dtype=torch.long) if k in data else None) for k in ("Ptr", "Pva", "Pte")}
+    n_out = getattr(model, "n_out", 1)
 
     def pick(t, idx):
         return None if t is None else t[idx]
@@ -152,7 +153,7 @@ def train_model(model: nn.Module, data: dict, epochs: int = 60, lr: float = 3e-4
         for i in range(0, len(Xtr), batch_size):
             b = perm[i:i + batch_size]
             opt.zero_grad()
-            prev_b = Xtr[b][:, -1, 0:1] if getattr(model, "residual", False) else None
+            prev_b = Xtr[b][:, -1, :n_out] if getattr(model, "residual", False) else None
             loss = loss_fn(model(Xtr[b], pick(P['Ptr'], b)), ytr[b], prev_b)
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -168,7 +169,7 @@ def train_model(model: nn.Module, data: dict, epochs: int = 60, lr: float = 3e-4
                     attn_rows.append((alpha.mean(dim=(0, 1)) * model.n_in).numpy())
             else:
                 out = model(Xva, P['Pva'])
-            prev_va = Xva[:, -1, 0:1] if getattr(model, "residual", False) else None
+            prev_va = Xva[:, -1, :n_out] if getattr(model, "residual", False) else None
             va_loss = loss_fn(out, yva, prev_va).item()
         hist.append({"epoch": ep, "train_loss": tr_loss, "val_loss": va_loss})
         if va_loss < best_val - 1e-6:
@@ -194,7 +195,7 @@ def train_model(model: nn.Module, data: dict, epochs: int = 60, lr: float = 3e-4
                 result["attn_time"] = beta.mean(dim=0).numpy()                     # (L,)
         else:
             out = model(Xte, P['Pte'])
-    result["pred_scaled"] = out.squeeze(-1).numpy()
+    result["pred_scaled"] = out.numpy() if n_out > 1 else out.squeeze(-1).numpy()
     if can_track and attn_rows:
         result["attn_epoch"] = pd.DataFrame(attn_rows, columns=data["cols"], index=np.arange(1, len(attn_rows) + 1))
     return result
@@ -237,3 +238,43 @@ def prepare_panel_windows(C: pd.DataFrame, date_col: str, entity_col: str, targe
     return {"cols": cols, "Xtr": X[m_tr], "ytr": y[m_tr], "Ptr": pid[m_tr], "Xva": X[m_va], "yva": y[m_va],
             "Pva": pid[m_va], "Xte": X[m_te], "yte": y[m_te], "Pte": pid[m_te], "dates_te": dates[m_te],
             "prov_te": prov[m_te], "true_te": lvl[m_te], "prev_te": prev[m_te], "mu_te": mu, "sd_te": sd}
+
+
+def prepare_wide_windows(C: pd.DataFrame, y_levels: pd.DataFrame, date_col: str, endog_cols: list[str],
+                         exog_cols: list[str], seq_len: int, train_end, val_frac: float = 0.15) -> dict:
+    """Cửa sổ trượt cho dữ liệu bảng rộng đa tỉnh: học đồng thời K biến nội sinh + ngoại sinh X."""
+    from numpy.lib.stride_tricks import sliding_window_view
+
+    C = C.copy()
+    C[date_col] = pd.to_datetime(C[date_col])
+    C = C.sort_values(date_col).reset_index(drop=True)
+    yl = y_levels.copy()
+    yl[date_col] = pd.to_datetime(yl[date_col])
+    yl = yl.sort_values(date_col).set_index(date_col).loc[C[date_col]]
+
+    n_out = len(endog_cols)
+    cols = list(endog_cols) + [c for c in exog_cols if c not in endog_cols]
+    arr = C[cols].to_numpy(np.float32)
+    T = len(arr)
+    if T <= seq_len:
+        raise ValueError(f"Chuỗi quá ngắn (T={T} <= seq_len={seq_len}).")
+    X = np.ascontiguousarray(sliding_window_view(arr, (seq_len, arr.shape[1]))[:, 0][:T - seq_len])
+    idx = np.arange(seq_len, T)
+    y = arr[idx, :n_out]
+    dates = C[date_col].to_numpy()[idx]
+    lvl = yl[endog_cols].to_numpy(float)
+    lvl_true = lvl[idx]
+    lvl_prev = lvl[idx - 1]
+
+    is_tr = dates <= np.datetime64(train_end)
+    tr_dates = np.sort(np.unique(dates[is_tr]))
+    cut = tr_dates[int(len(tr_dates) * (1 - val_frac))]
+    m_va, m_te = is_tr & (dates > cut), ~is_tr
+    m_tr = is_tr & ~m_va
+    return {
+        "cols": cols, "endog_cols": list(endog_cols),
+        "Xtr": X[m_tr], "ytr": y[m_tr],
+        "Xva": X[m_va], "yva": y[m_va],
+        "Xte": X[m_te], "yte": y[m_te],
+        "dates_te": dates[m_te], "true_te": lvl_true[m_te], "prev_te": lvl_prev[m_te],
+    }

@@ -62,7 +62,7 @@ with tab1:
         base = res["VAR"]["metrics"]["RMSE"]
         tbl["Mức cải thiện so với VAR (%)"] = (base - tbl["RMSE"]) / base * 100
     else:
-        tbl["Mức cải thiện so with VAR (%)"] = np.nan
+        tbl["Mức cải thiện so với VAR (%)"] = np.nan
         st.info("Huấn luyện **VAR** ở Trang 5 để có cột “Mức cải thiện so với VAR”.")
     st.markdown(f"**Trung bình {len(provs)} tỉnh**")
     
@@ -239,7 +239,8 @@ with tab4:
         st.stop()
     at = dv["attn"]
     cols_all = at["cols"]
-    exog = [c for c in cols_all if c != target]
+    endog_set = set(at.get("endog_cols") or st.session_state.get("endog_cols") or [target])
+    exog = [c for c in cols_all if c not in endog_set]
     if not exog:
         st.info("DeepVARX này chỉ có chuỗi Y (không có biến ngoại sinh).")
         st.stop()
@@ -285,7 +286,7 @@ with tab4:
                              title="Variable Attention theo epoch (validation, gate tương đối ≈ 1 là trung bình)")
             st.plotly_chart(h2, width="stretch")
             vd = attention_verdict(ae, 0.1)
-            vd = vd[vd["Biến"] != target]
+            vd = vd[~vd["Biến"].isin(endog_set)]
             st.dataframe(vd.style.format({c: "{:.3f}" for c in vd.columns if c.startswith("Gate")}), width="stretch", hide_index=True)
         lag = at["lag"]
         h3 = go.Figure(go.Heatmap(z=lag.T, x=[f"t-{lag.shape[0] - i}" for i in range(lag.shape[0])], y=cols_all, colorscale="YlOrBr"))

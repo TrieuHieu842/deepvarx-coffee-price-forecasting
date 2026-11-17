@@ -1,4 +1,4 @@
-"""Bộ định tuyến dữ liệu (Data Dispatcher): cắt df_clean_panel thành 3 gói vật lý A, B, C."""
+"""Bộ định tuyến dữ liệu (Data Dispatcher): cắt dữ liệu sạch thành 3 gói vật lý A, B, C (hỗ trợ cả Panel và Bảng rộng đa tỉnh)."""
 from __future__ import annotations
 
 import numpy as np
@@ -9,21 +9,21 @@ from modules.data_utils import DATA_PROC
 PKG_FILES = {"A": "train_test_A_base.csv", "B": "train_test_B_expanded_diff.csv", "C": "train_test_C_expanded_scaled.csv"}
 
 
-def _diff(df: pd.DataFrame, ent: pd.Series, cols: list[str], d: int) -> pd.DataFrame:
-    x = df[cols]
+def _diff(df: pd.DataFrame, ent: pd.Series | None, cols: list[str], d: int) -> pd.DataFrame:
+    x = df[cols].copy()
     for _ in range(d):
-        x = x.groupby(ent, observed=True).diff()
+        x = x.groupby(ent, observed=True).diff() if ent is not None else x.diff()
     return x
 
 
-def build_packages(panel: pd.DataFrame, date_col: str, entity_col: str, target: str, base: list[str],
+def build_packages(panel: pd.DataFrame, date_col: str, entity_col: str | None, target: str, base: list[str],
                    ext: list[str], d: int, train_end, base_model: str = "VAR", write: bool = True,
-                   endog_cols: list[str] | None = None, **kwargs) -> tuple[dict, dict]:
+                   endog_cols: list[str] | None = None, mode: str | None = None,
+                   endog_labels: dict[str, str] | None = None, **kwargs) -> tuple[dict, dict]:
     """Gói A: Tập Cơ Sở (sai phân bậc d; hoặc mức gốc nếu base_model='VECM'). Dùng cho VAR/VECM, VARX.
     Gói B: Tập Mở Rộng sai phân bậc d. Dùng cho VARX-L.
-    Gói C: Tập Mở Rộng mức gốc (d=0), Standard Scaler THEO TỪNG TỈNH (khớp trên TRAIN) + province_id. Dùng cho mô hình Global.
-    Mọi gói có cột `split` (train/test theo mốc ngày chung) và `y_level` (giá gốc VNĐ/kg để khôi phục đơn vị).
-    Hỗ trợ đầy đủ bộ biến nội sinh đa biến endog_cols (chuỗi giá cà phê) và ngoại sinh exog_cols."""
+    Gói C: Tập Mở Rộng mức gốc (d=0), Standard Scaler (theo từng tỉnh ở Panel, hoặc trên TRAIN ở Wide).
+    Mọi gói có cột `split` (train/test theo mốc ngày chung) và `y_level` (giá gốc VNĐ/kg)."""
     if endog_cols is None and "endog_cols" in kwargs:
         endog_cols = kwargs["endog_cols"]
     all_endog = [c for c in endog_cols if c in panel.columns] if endog_cols else [target]
@@ -31,12 +31,23 @@ def build_packages(panel: pd.DataFrame, date_col: str, entity_col: str, target: 
         all_endog = [target]
     primary_target = all_endog[0]
 
-    m = panel.sort_values([entity_col, date_col]).reset_index(drop=True)
-    m["split"] = np.where(m[date_col] <= pd.Timestamp(train_end), "train", "test")
-    m["y_level"] = m[primary_target]
-    cats = list(m[entity_col].cat.categories)
-    keep = [date_col, entity_col, "split", "y_level"]
-    ent = m[entity_col]
+    is_wide = (mode == "wide") or (entity_col is None) or (entity_col not in panel.columns)
+
+    if is_wide:
+        m = panel.sort_values(date_col).reset_index(drop=True)
+        m["split"] = np.where(m[date_col] <= pd.Timestamp(train_end), "train", "test")
+        m["y_level"] = m[primary_target]
+        keep = [date_col, "split", "y_level"]
+        ent = None
+        y_levels = m[[date_col] + all_endog].copy()
+    else:
+        m = panel.sort_values([entity_col, date_col]).reset_index(drop=True)
+        m["split"] = np.where(m[date_col] <= pd.Timestamp(train_end), "train", "test")
+        m["y_level"] = m[primary_target]
+        cats = list(m[entity_col].cat.categories)
+        keep = [date_col, entity_col, "split", "y_level"]
+        ent = m[entity_col]
+        y_levels = None
 
     def diff_pkg(cols):
         all_c = all_endog + [c for c in cols if c not in all_endog]
@@ -49,18 +60,43 @@ def build_packages(panel: pd.DataFrame, date_col: str, entity_col: str, target: 
 
     cols_all = all_endog + [c for c in ext if c not in all_endog]
     tr = m["split"] == "train"
-    gb = m[cols_all].where(np.broadcast_to(tr.to_numpy()[:, None], (len(m), len(cols_all)))).groupby(ent, observed=True)
-    mu, sd = gb.transform("mean"), gb.transform("std").replace(0, 1.0).fillna(1.0)
-    C = pd.concat([m[keep], (m[cols_all] - mu) / sd], axis=1)
-    C["province_id"] = pd.Categorical(ent, categories=cats).codes
-    scalers = {str(e): (float(mu.loc[ent == e, primary_target].iloc[0]), float(sd.loc[ent == e, primary_target].iloc[0])) for e in cats}
+    if is_wide:
+        mu = m.loc[tr, cols_all].mean()
+        sd = m.loc[tr, cols_all].std().replace(0, 1.0).fillna(1.0)
+        C = pd.concat([m[keep], (m[cols_all] - mu) / sd], axis=1)
+        scalers = {c: (float(mu[c]), float(sd[c])) for c in all_endog}
+        lbls = endog_labels or {c: c for c in all_endog}
+        entities = [lbls.get(c, c) for c in all_endog]
+    else:
+        gb = m[cols_all].where(np.broadcast_to(tr.to_numpy()[:, None], (len(m), len(cols_all)))).groupby(ent, observed=True)
+        mu, sd = gb.transform("mean"), gb.transform("std").replace(0, 1.0).fillna(1.0)
+        C = pd.concat([m[keep], (m[cols_all] - mu) / sd], axis=1)
+        C["province_id"] = pd.Categorical(ent, categories=cats).codes
+        scalers = {str(e): (float(mu.loc[ent == e, primary_target].iloc[0]),
+                            float(sd.loc[ent == e, primary_target].iloc[0])) for e in cats}
+        lbls = {}
+        entities = [str(c) for c in cats]
 
     pk = {"A": level_pkg(base) if base_model == "VECM" else diff_pkg(base), "B": diff_pkg(ext), "C": C.reset_index(drop=True)}
-    meta = {"scalers": scalers, "entities": [str(c) for c in cats], "d": int(d), "base_model": base_model,
-            "A_mode": "levels" if base_model == "VECM" else "diff", "train_end": pd.Timestamp(train_end),
-            "target": primary_target, "endog_cols": list(all_endog), "exog_cols": list(ext),
-            "base": list(base), "ext": list(ext), "date_col": date_col, "entity_col": entity_col,
-            "paths": {}}
+    meta = {
+        "mode": "wide" if is_wide else "panel",
+        "scalers": scalers,
+        "entities": entities,
+        "d": int(d),
+        "base_model": base_model,
+        "A_mode": "levels" if base_model == "VECM" else "diff",
+        "train_end": pd.Timestamp(train_end),
+        "target": primary_target,
+        "endog_cols": list(all_endog),
+        "endog_labels": dict(lbls),
+        "exog_cols": list(ext),
+        "base": list(base),
+        "ext": list(ext),
+        "date_col": date_col,
+        "entity_col": None if is_wide else entity_col,
+        "y_levels": y_levels,
+        "paths": {},
+    }
     if write:
         DATA_PROC.mkdir(parents=True, exist_ok=True)
         for k, f in PKG_FILES.items():

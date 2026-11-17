@@ -1,5 +1,4 @@
 import importlib
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -9,22 +8,21 @@ import modules.dispatcher
 importlib.reload(modules.dispatcher)
 
 from modules.data_utils import difference
-from modules.dispatcher import PKG_FILES, build_packages
 from modules.feature_selection import vif_table
-from modules.panel_data import panel_diff_train, train_end_from_ratio
+from modules.panel_data import is_endog_derived_col, panel_diff_train, train_end_from_ratio
 from modules.stat_tests import adf_kpss, integration_order
 from modules.ui import fmt_p, require, reset_downstream, setup_page
 
 setup_page("4 · Chốt biến & Dispatcher")
 st.title("Trang 4 · Chốt biến & Bộ định tuyến dữ liệu")
-st.caption("Gom bằng chứng từ Trang 1–3, tự động nhặt biến vào hai giỏ, rồi cắt "
-           "**toàn bộ panel** thành 3 gói dữ liệu sẵn sàng huấn luyện.")
-require(["df_clean_panel", "d", "evidence_lin", "evidence_nl"],
+require(["df_clean_panel", "d", "evidence_lin", "evidence_nl", "panel_meta"],
         "Cần hoàn tất **Trang 1**, **Trang 2** (chốt d, mở trang để lưu bằng chứng) và mở **Trang 3** (lưu bằng chứng XGBoost).")
 
 panel = st.session_state["df_clean_panel"]
 proxy_df = st.session_state["df_clean"]
 pm = st.session_state["panel_meta"]
+is_wide = pm.get("mode") == "wide"
+endog_labels = pm.get("endog_labels") or {}
 date_col, entity_col, target = pm["date_col"], pm["entity_col"], st.session_state["target"]
 xcols = list(st.session_state["x_cols"])
 train_end = st.session_state["train_end"]
@@ -37,6 +35,13 @@ if not set(xcols) <= set(ev_lin.index) or not set(xcols) <= set(ev_nl.index):
     st.warning("Bằng chứng ở Trang 2/3 không khớp danh sách biến hiện tại. Hãy mở lại Trang 2 và Trang 3 để cập nhật.")
     st.stop()
 
+if is_wide:
+    st.caption("Gom bằng chứng từ Trang 1–3, xác nhận các cột **giá tỉnh Việt Nam (biến nội sinh Y)** và **biến ngoại sinh X**, "
+               "rồi đóng gói 3 bộ dữ liệu A/B/C sẵn sàng huấn luyện.")
+else:
+    st.caption("Gom bằng chứng từ Trang 1–3, tự động nhặt biến vào hai giỏ, rồi cắt "
+               "**toàn bộ panel** thành 3 gói dữ liệu sẵn sàng huấn luyện.")
+
 
 @st.cache_data(show_spinner="Đang tổng hợp tính dừng…")
 def stationarity_info(train_df: pd.DataFrame, d_: int) -> pd.DataFrame:
@@ -48,58 +53,71 @@ def stationarity_info(train_df: pd.DataFrame, d_: int) -> pd.DataFrame:
         except ImportError:
             di, ok = np.nan, None
         rows.append({"Biến": c, "d_i": di, "ok": ok})
-    return pd.DataFrame(rows).set_index("Biến")
+    return pd.DataFrame(rows).set_index("Biến") if rows else pd.DataFrame(columns=["d_i", "ok"])
 
 
-@st.cache_data(show_spinner="Đang tính VIF trên toàn panel…")
-def vif_info(panel_, date_col_, entity_col_, cols_, train_end_, d_) -> pd.Series:
-    x = panel_diff_train(panel_, date_col_, entity_col_, cols_, train_end_, d_)
+@st.cache_data(show_spinner="Đang tính VIF…")
+def vif_info(panel_, proxy_df_, date_col_, entity_col_, cols_, train_end_, d_, is_wide_: bool) -> pd.Series:
+    if not cols_:
+        return pd.Series(dtype=float)
+    if is_wide_:
+        x = difference(proxy_df_.loc[proxy_df_.index <= train_end_, cols_], d_)
+    else:
+        x = panel_diff_train(panel_, date_col_, entity_col_, cols_, train_end_, d_)
     return vif_table(x).set_index("Biến")["VIF"] if x.shape[1] > 1 else pd.Series(1.0, index=cols_)
 
 
-stn = stationarity_info(proxy_df.iloc[:train_n][xcols], int(d))
-vif = vif_info(panel, date_col, entity_col, xcols, train_end, d_eff)
-if stn["ok"].isna().any():
-    st.warning("Thiếu `statsmodels`: chưa kiểm tra được tính dừng theo biến (tạm coi là đạt).")
-
 R = pd.DataFrame(index=xcols)
-R["d_i"] = stn["d_i"]
-R["stat_ok"] = stn["ok"].map(lambda v: True if v is None or v != v else bool(v))
-R["vif"] = vif
-R["gr_ok"] = ev_lin.loc[xcols, "Granger đạt"].astype(bool)
-R["gr_p"] = ev_lin.loc[xcols, "p Granger (Bonferroni)"]
-R["ccf_lag"] = ev_lin.loc[xcols, "Trễ CCF"]
-R["ccf_ok"] = ev_lin.loc[xcols, "CCF đạt"].astype(bool)
-R["cons"] = ev_lin.loc[xcols, "Số tỉnh Granger đạt"]
-n_prov = int(ev_lin["Tổng số tỉnh"].iloc[0])
-R["bds_p"] = ev_nl.loc[xcols, "p BDS (phần dư Y~Y,X)"]
-R["bds_yes"] = R["bds_p"] < 0.05
-R["xgb_rank"] = ev_nl.loc[xcols, "Hạng (đại diện)"].astype(int)
-R["xgb_rank_all"] = ev_nl.loc[xcols, "Hạng (toàn panel)"].astype(int)
+if xcols:
+    stn = stationarity_info(proxy_df.iloc[:train_n][xcols], int(d))
+    vif = vif_info(panel, proxy_df, date_col, entity_col, xcols, train_end, d_eff, is_wide)
+    if stn["ok"].isna().any():
+        st.warning("Thiếu `statsmodels`: chưa kiểm tra được tính dừng theo biến (tạm coi là đạt).")
+
+    R["d_i"] = stn["d_i"]
+    R["stat_ok"] = stn["ok"].map(lambda v: True if v is None or v != v else bool(v))
+    R["vif"] = vif
+    R["gr_ok"] = ev_lin.loc[xcols, "Granger đạt"].astype(bool)
+    R["gr_p"] = ev_lin.loc[xcols, "p Granger (Bonferroni)"]
+    R["ccf_lag"] = ev_lin.loc[xcols, "Trễ CCF"]
+    R["ccf_ok"] = ev_lin.loc[xcols, "CCF đạt"].astype(bool)
+    R["cons"] = ev_lin.loc[xcols, "Số tỉnh Granger đạt"]
+    n_prov = int(ev_lin["Tổng số tỉnh"].iloc[0])
+    R["bds_p"] = ev_nl.loc[xcols, "p BDS (phần dư Y~Y,X)"]
+    R["bds_yes"] = R["bds_p"] < 0.05
+    R["xgb_rank"] = ev_nl.loc[xcols, "Hạng (đại diện)"].astype(int)
+    R["xgb_rank_all"] = ev_nl.loc[xcols, "Hạng (toàn panel)"].astype(int)
 
 # =============================================================================== PHẦN 1: bằng chứng (thu gọn)
 with st.expander("Hồ sơ minh chứng tổng hợp (Evidence Matrix)", expanded=False):
-    M = pd.DataFrame({
-        "Biến (X)": xcols,
-        "Tính dừng": [("–" if r.d_i != r.d_i else f"d={int(r.d_i)} " + ("✅" if r.stat_ok else "⚠️ chưa dừng")) for r in R.itertuples()],
-        "VIF": [f"{r.vif:.1f}" + (" ⚠️" if r.vif >= 10 else "") for r in R.itertuples()],
-        "Granger (đại diện)": [("Đạt" if r.gr_ok else "Trượt") + f" (p={fmt_p(r.gr_p)})" for r in R.itertuples()],
-        "Nhất quán": [f"{int(r.cons)}/{n_prov} tỉnh" for r in R.itertuples()],
-        "Trễ CCF": [f"lag {int(r.ccf_lag)}" + (" ✓" if r.ccf_ok else "") if r.ccf_lag == r.ccf_lag else "–" for r in R.itertuples()],
-        "Phi tuyến BDS": [("–" if r.bds_p != r.bds_p else ("Có" if r.bds_yes else "Không") + f" (p={fmt_p(r.bds_p)})") for r in R.itertuples()],
-        "XGBoost": [f"Top {r.xgb_rank} (đại diện) · Top {r.xgb_rank_all} (toàn panel)" for r in R.itertuples()],
-    })
-    sty = (M.style
-           .map(lambda v: "background-color:#d5f5e3" if "✅" in v else ("background-color:#fdebd0" if "⚠️" in v else ""), subset=["Tính dừng"])
-           .map(lambda v: "background-color:#fdebd0" if "⚠️" in v else "background-color:#d5f5e3", subset=["VIF"])
-           .map(lambda v: "background-color:#d5f5e3" if v.startswith("Đạt") else "background-color:#fadbd8", subset=["Granger (đại diện)"])
-           .map(lambda v: "background-color:#e8daef" if v.startswith("Có") else "", subset=["Phi tuyến BDS"]))
-    st.dataframe(sty, width="stretch", hide_index=True)
+    if xcols:
+        M = pd.DataFrame({
+            "Biến (X)": xcols,
+            "Tính dừng": [("–" if r.d_i != r.d_i else f"d={int(r.d_i)} " + ("✅" if r.stat_ok else "⚠️ chưa dừng")) for r in R.itertuples()],
+            "VIF": [f"{r.vif:.1f}" + (" ⚠️" if r.vif >= 10 else "") for r in R.itertuples()],
+            "Granger (đại diện)": [("Đạt" if r.gr_ok else "Trượt") + f" (p={fmt_p(r.gr_p)})" for r in R.itertuples()],
+            "Nhất quán": [f"{int(r.cons)}/{n_prov} tỉnh" for r in R.itertuples()],
+            "Trễ CCF": [f"lag {int(r.ccf_lag)}" + (" ✓" if r.ccf_ok else "") if r.ccf_lag == r.ccf_lag else "–" for r in R.itertuples()],
+            "Phi tuyến BDS": [("–" if r.bds_p != r.bds_p else ("Có" if r.bds_yes else "Không") + f" (p={fmt_p(r.bds_p)})") for r in R.itertuples()],
+            "XGBoost": [f"Top {r.xgb_rank} (Y₁) · Top {r.xgb_rank_all} (đa tỉnh)" for r in R.itertuples()],
+        })
+        sty = (M.style
+               .map(lambda v: "background-color:#d5f5e3" if "✅" in v else ("background-color:#fdebd0" if "⚠️" in v else ""), subset=["Tính dừng"])
+               .map(lambda v: "background-color:#fdebd0" if "⚠️" in v else "background-color:#d5f5e3", subset=["VIF"])
+               .map(lambda v: "background-color:#d5f5e3" if v.startswith("Đạt") else "background-color:#fadbd8", subset=["Granger (đại diện)"])
+               .map(lambda v: "background-color:#e8daef" if v.startswith("Có") else "", subset=["Phi tuyến BDS"]))
+        st.dataframe(sty, width="stretch", hide_index=True)
+    else:
+        M = pd.DataFrame(columns=["Biến (X)"])
+        st.info("Không có biến ngoại sinh X.")
 
 # =============================================================================== PHẦN 2: Biến Nội sinh (Y) & Danh sách Biến Ngoại sinh (X)
 st.divider()
-st.subheader("1. Biến nội sinh (Y — Giá thu mua cà phê tại các vùng trọng điểm)")
-st.caption("Theo thiết kế chuẩn thực nghiệm của **DeepVAR 2 và LSTM 2**, hệ thống dự báo đồng thời giá thu mua cà phê Robusta tại các vùng trọng điểm Tây Nguyên (Đắk Lắk, Lâm Đồng, Gia Lai):")
+st.subheader("1. Biến nội sinh (Y — Giá thu mua cà phê tại các tỉnh Việt Nam)")
+if is_wide:
+    st.caption("Dữ liệu ở chế độ **Bảng rộng đa tỉnh**: toàn bộ các cột giá của từng tỉnh ở Việt Nam được chọn làm **biến nội sinh (Y)**.")
+else:
+    st.caption("Theo thiết kế chuẩn thực nghiệm của **DeepVAR 2 và LSTM 2**, hệ thống dự báo đồng thời giá thu mua cà phê Robusta tại các vùng trọng điểm Tây Nguyên (Đắk Lắk, Lâm Đồng, Gia Lai):")
 
 col_y1, col_y2, col_y3 = st.columns(3)
 with col_y1:
@@ -110,20 +128,41 @@ with col_y3:
     st.info("**Gia Lai (Bắc Tây Nguyên)**\n\nTrung tâm sản xuất quy mô lớn kết nối các tỉnh Tây Nguyên và duyên hải miền Trung.")
 
 all_panel_cols = list(panel.columns)
-planned_endog = [c for c in ["price_vnd_kg", "coffee_price_vn"] if c in all_panel_cols]
-if not planned_endog:
-    planned_endog = [target] if target in all_panel_cols else [c for c in all_panel_cols if "price" in c.lower()][:1]
-available_endog = planned_endog
+if is_wide:
+    planned_endog = [c for c in (pm.get("endog_cols") or [target]) if c in all_panel_cols]
+    if not planned_endog:
+        planned_endog = [target] if target in all_panel_cols else []
+    available_endog = planned_endog
+    endog_options = list(dict.fromkeys(
+        available_endog + [
+            c for c in all_panel_cols
+            if any(k in c.lower() for k in ["price", "gia", "vnd"])
+            and c != date_col and not c.startswith("ret_") and not c.endswith(("_lag1", "_lag2"))
+        ]
+    ))
+    reset_help = "Khôi phục mặc định toàn bộ các cột giá tỉnh Việt Nam đã nhận diện"
+else:
+    planned_endog = [c for c in ["price_vnd_kg", "coffee_price_vn"] if c in all_panel_cols]
+    if not planned_endog:
+        planned_endog = [target] if target in all_panel_cols else [c for c in all_panel_cols if "price" in c.lower()][:1]
+    available_endog = planned_endog
+    endog_options = list(dict.fromkeys(
+        available_endog + [
+            c for c in all_panel_cols
+            if any(k in c.lower() for k in ["price", "gia", "vnd"])
+            and c not in (date_col, entity_col) and not c.endswith("_lag1") and not c.endswith("_lag2")
+        ]
+    ))
+    reset_help = "Khôi phục mặc định: price_vnd_kg"
 
-c_y_btn1, c_y_btn2 = st.columns([2, 2])
-if c_y_btn1.button("🎯 Đặt lại Biến nội sinh đề xuất (Giá thu mua cà phê)", help="Khôi phục mặc định: price_vnd_kg", use_container_width=True):
+c_y_btn1, _ = st.columns([2, 2])
+if c_y_btn1.button("🎯 Đặt lại Biến nội sinh đề xuất (Giá thu mua cà phê)", help=reset_help, use_container_width=True):
     st.session_state["chosen_endog"] = available_endog
     st.rerun()
 
 if "chosen_endog" not in st.session_state or not st.session_state["chosen_endog"]:
     st.session_state["chosen_endog"] = available_endog
 
-endog_options = list(dict.fromkeys(available_endog + [c for c in all_panel_cols if any(k in c.lower() for k in ["price", "gia", "vnd"]) and c not in (date_col, entity_col) and not c.endswith("_lag1") and not c.endswith("_lag2")]))
 chosen_endog = st.multiselect(
     "Danh sách biến nội sinh (Y) đưa vào hệ thống mô hình:",
     options=endog_options,
@@ -134,47 +173,44 @@ st.session_state["chosen_endog"] = chosen_endog
 if not chosen_endog:
     st.error("⚠️ Phải chọn ít nhất 1 biến nội sinh làm mục tiêu dự báo!")
 else:
-    st.success(f"✅ Đã chọn **{len(chosen_endog)}** biến nội sinh (Y): {', '.join(chosen_endog)}. Biến mục tiêu trọng tâm Y₁: **{chosen_endog[0]}**")
+    y_desc = ", ".join(f"{endog_labels.get(c, c)} (`{c}`)" if is_wide else c for c in chosen_endog)
+    st.success(f"✅ Đã chọn **{len(chosen_endog)}** biến nội sinh (Y): {y_desc}. Biến mục tiêu trọng tâm Y₁: **{chosen_endog[0]}**")
 
 # =============================================================================== PHẦN 3: Lựa chọn Biến Ngoại sinh (X)
 st.divider()
 st.subheader("2. Lựa chọn danh sách biến ngoại sinh (X) — Chuẩn Model 2 (11 biến)")
-st.caption("Chọn 8 biến ngoại sinh (3 biến thời tiết + 5 biến kinh tế) để kết hợp với 3 tỉnh tạo thành đúng **Bộ 11 biến tối ưu Model 2** cho toàn bộ các mô hình:")
+st.caption("Chọn 8 biến ngoại sinh (3 biến thời tiết + 5 biến kinh tế) hoặc tùy biến các biến ngoại sinh giữ nguyên từ dữ liệu:")
 
-exclude_from_x = set(chosen_endog) | {
+exclude_from_x = set(chosen_endog) | set(pm.get("derived_endog") or []) | {
     "coffee_price_vnd_kg_raw", "coffee_price_vnd_kg", "coffee_price_vn", "lat", "lon",
     "province_id", "is_benchmark", "is_imputed", "province_slug",
     "ret_price", "ret_price_lag1", "ret_price_lag2", "price_vnd_kg_lag1"
 }
-avail_x = [c for c in xcols if c not in exclude_from_x and not c.startswith("ecm_") and not c.endswith("_lag1") and not c.endswith("_lag2")]
+avail_x = [
+    c for c in xcols
+    if c not in exclude_from_x
+    and not is_endog_derived_col(c, chosen_endog)
+    and not c.startswith("ecm_")
+    and not c.endswith("_lag1")
+    and not c.endswith("_lag2")
+]
 
 model2_optimal_exog_ret = [
-    "ret_london",
-    "ret_arabica",
-    "ret_brent",
-    "ret_dxy",
-    "ret_usd_vnd",
-    "temp_mean",
-    "precip_nasa",
-    "humidity_air",
+    "ret_london", "ret_arabica", "ret_brent", "ret_dxy", "ret_usd_vnd",
+    "temp_mean", "precip_nasa", "humidity_air",
+    "temp_mean_ch", "precip_nasa_ch", "humidity_air_ch",
 ]
 model2_optimal_exog_lvl = [
-    "london_price_usd_ton",
-    "arabica_price_usd_lb",
-    "brent_price_usd_barrel",
-    "dxy_index",
-    "usd_vnd_rate",
-    "temp_mean",
-    "precip_nasa",
-    "humidity_air",
+    "london_price_usd_ton", "arabica_price_usd_lb", "brent_price_usd_barrel", "dxy_index", "usd_vnd_rate",
+    "temp_mean", "precip_nasa", "humidity_air",
+    "temp_mean_ch", "precip_nasa_ch", "humidity_air_ch",
 ]
 
-# Ưu tiên tập biến log-return chuẩn I(0) nếu có trong dữ liệu, nếu không dùng mức cấp 1
 rec_exog = [c for c in model2_optimal_exog_ret if c in avail_x]
 if len(rec_exog) < 5:
     rec_exog = [c for c in model2_optimal_exog_lvl if c in avail_x]
 if not rec_exog:
-    rec_exog = [c for c in ["temp_mean", "precip_nasa", "humidity_air", "usd_vnd_rate"] if c in avail_x]
+    rec_exog = [c for c in ["temp_mean", "precip_nasa", "humidity_air", "temp_mean_ch", "precip_nasa_ch", "humidity_air_ch", "usd_vnd_rate"] if c in avail_x]
 
 bx1, bx2, bx3, bx4 = st.columns(4)
 if bx1.button("🎯 Chọn 8 biến tối ưu Model 2", help="Khôi phục mặc định 8 biến tối ưu thực nghiệm: 3 Thời tiết + 5 Kinh tế", use_container_width=True):
@@ -185,7 +221,7 @@ if bx2.button("🌟 Chọn tất cả biến ngoại sinh", help="Đưa toàn b�
     st.session_state["chosen_x_features"] = list(avail_x)
     st.rerun()
 
-if bx3.button("📊 Chọn biến đạt thống kê", help="Chọn các biến ngoại sinh đạt Granger, CCF hoặc BDS", use_container_width=True):
+if bx3.button("📊 Chọn biến đạt thống kê", help="Chọn các biến ngoại sinh đạt Granger hoặc CCF", use_container_width=True):
     stat_vars = [c for c in avail_x if c in R.index and (R.loc[c, "gr_ok"] or R.loc[c, "ccf_ok"])]
     st.session_state["chosen_x_features"] = stat_vars if stat_vars else rec_exog
     st.rerun()
@@ -229,7 +265,7 @@ dates = np.sort(panel[date_col].unique())
 cur_ratio = (dates <= np.datetime64(train_end)).sum() / len(dates)
 opts = sorted({0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, round(cur_ratio, 2)})
 def_idx = min(range(len(opts)), key=lambda i: abs(opts[i] - cur_ratio))
-sel = c_m2.selectbox("Mốc chia Train/Test (theo ngày chung cho toàn panel)", opts, index=def_idx,
+sel = c_m2.selectbox("Mốc chia Train/Test (theo ngày chung)", opts, index=def_idx,
                      format_func=lambda r: f"{r:.0%} — TRAIN đến {pd.Timestamp(dates[max(int(len(dates) * r) - 1, 0)]):%d/%m/%Y}")
 new_end = train_end if sel == opts[def_idx] else train_end_from_ratio(panel, date_col, sel)
 if new_end < train_end:
@@ -239,19 +275,20 @@ if new_end < train_end:
 st.divider()
 st.markdown("<style>button[data-testid='stBaseButton-primary']{height:3.4rem;font-size:1.1rem;font-weight:700}</style>",
             unsafe_allow_html=True)
-clicked = st.button("🚀 XÁC NHẬN BỘ BIẾN & TẠO DỮ LIỆU HUẤN LUYỆN", type="primary", use_container_width=True)
+clicked = st.button("🚀 XÁC NHẬN BỘ BIẾN & TẠO DỮ LIỆU HUẤN LUYỆN", type="primary", use_container_width=True,
+                    disabled=not chosen_endog)
 
 if clicked:
     selected_x = list(chosen_x)
-    selected_y = list(chosen_endog) if chosen_endog else ([target] if target else ["coffee_price_vn"])
+    selected_y = list(chosen_endog)
     primary_target = selected_y[0]
-    
-    with st.spinner("Đang chuẩn bị dữ liệu huấn luyện cho toàn panel…"):
-        try:
-            pk, meta = modules.dispatcher.build_packages(panel, date_col, entity_col, primary_target, selected_x, selected_x, int(d), new_end, base_model, endog_cols=selected_y)
-        except TypeError:
-            importlib.reload(modules.dispatcher)
-            pk, meta = modules.dispatcher.build_packages(panel, date_col, entity_col, primary_target, selected_x, selected_x, int(d), new_end, base_model, endog_cols=selected_y)
+
+    with st.spinner("Đang chuẩn bị dữ liệu huấn luyện…"):
+        pk, meta = modules.dispatcher.build_packages(
+            panel, date_col, entity_col, primary_target, selected_x, selected_x,
+            int(d), new_end, base_model, endog_cols=selected_y,
+            mode=pm.get("mode", "panel"), endog_labels=endog_labels,
+        )
     reset_downstream("base_set")
     st.session_state.update(
         train_end=new_end, target=primary_target, endog_cols=selected_y, exog_cols=selected_x,
@@ -259,7 +296,7 @@ if clicked:
         ext_sources={v: "Người dùng chọn trực tiếp" for v in selected_x},
         base_model=base_model, packages=pk, pkg_meta=meta, export_paths=meta["paths"]
     )
-    n_e = panel[entity_col].nunique()
+    n_e = len(selected_y) if is_wide else panel[entity_col].nunique()
     st.success(f"🎉 Đã tạo thành công dữ liệu cho **{n_e}** tỉnh với **{len(selected_y)}** biến nội sinh (Y: {', '.join(selected_y)}) "
                f"và **{len(selected_x)}** biến ngoại sinh (X: {', '.join(selected_x)}). TRAIN đến {new_end:%d/%m/%Y}.")
     st.toast("Dữ liệu huấn luyện đã sẵn sàng!")
@@ -269,7 +306,7 @@ pk, meta = st.session_state.get("packages"), st.session_state.get("pkg_meta")
 if pk is not None:
     st.divider()
     st.subheader("4. Dữ liệu huấn luyện đã sẵn sàng")
-    st.markdown(f"**Biến nội sinh (Y):** {', '.join(meta.get('endog_cols', [target]))} *(Mục tiêu dự báo trọng tâm Y₁: **{meta.get('target', target)}**)*")
+    st.markdown(f"**Biến nội sinh (Y):** {', '.join(meta.get('endog_cols', [target]))} *(Mục tiêu trọng tâm Y₁: **{meta.get('target', target)}**)*")
     st.markdown(f"**Biến ngoại sinh (X):** {', '.join(meta.get('exog_cols', meta.get('base', []))) if meta.get('exog_cols', meta.get('base')) else '(Không dùng biến ngoại sinh)'}")
     st.caption(f"Bảng dữ liệu: {len(pk['C']):,} dòng × {pk['C'].shape[1]} cột (đã chuẩn hóa và sẵn sàng cho các mô hình)")
     st.dataframe(pk["C"].head(8), width="stretch")

@@ -18,24 +18,30 @@ importlib.reload(modules.models.lstm_attention)
 
 from modules.data_utils import difference, metrics
 from modules.model_specs import ORDER, PROFILES, allocation
-from utils.var_model import VARModel
-from utils.varx_model import VARXModel
+from modules.models.baseline_varx import run_local_pkg, run_wide_pkg, select_order
 from modules.models.deepvar import DeepVAR, DeepVARConfig
-from modules.models.baseline_varx import run_local_pkg, select_order
 from modules.ui import require, setup_page
 
 setup_page("5 · Đặc tả mô hình & Huấn luyện")
 st.title("Trang 5 · Đặc tả mô hình & Huấn luyện")
-st.caption("Mô hình **Local** (VAR, VARX, VARX-L) được huấn luyện riêng cho từng tỉnh; mô hình **Global** (LSTM, DeepVAR, DeepVARX) "
-           "huấn luyện **một lần** trên toàn panel rồi tách dự báo theo tỉnh. Mọi dự báo quy về VNĐ/kg.")
-require(["packages", "pkg_meta", "base_set", "ext_set"], "Cần hoàn tất Trang 1–4 (bấm **CẮT PANEL THÀNH 3 GÓI** ở Trang 4).")
+require(["packages", "pkg_meta", "base_set", "ext_set"],
+        "Cần hoàn tất Trang 1–4 (bấm **XÁC NHẬN BỘ BIẾN & TẠO DỮ LIỆU HUẤN LUYỆN** ở Trang 4).")
 
 pk, meta = st.session_state["packages"], st.session_state["pkg_meta"]
+is_wide = meta.get("mode") == "wide"
 target, date_col, entity_col = meta["target"], meta["date_col"], meta["entity_col"]
 ents, d, train_end = meta["entities"], meta["d"], meta["train_end"]
 base_set, ext_set = meta["base"], meta["ext"]
 endog_list = meta.get("endog_cols") or [target]
+endog_labels = meta.get("endog_labels") or {c: c for c in endog_list}
 jr = max(int(st.session_state.get("johansen_rank") or 1), 1)
+
+if is_wide:
+    st.caption(f"Chế độ **Wide Multivariate**: mọi mô hình được huấn luyện đồng thời trên **{len(endog_list)}** cột giá tỉnh Việt Nam "
+               f"({', '.join(endog_labels.get(c, c) for c in endog_list)}) và quy dự báo về VNĐ/kg.")
+else:
+    st.caption("Mô hình **Local** (VAR, VARX, VARX-L) được huấn luyện riêng cho từng tỉnh; mô hình **Global** (LSTM, DeepVAR, DeepVARX) "
+               "huấn luyện **một lần** trên toàn panel rồi tách dự báo theo tỉnh. Mọi dự báo quy về VNĐ/kg.")
 
 try:
     import torch  # noqa: F401
@@ -44,7 +50,7 @@ except ImportError:
     TORCH_OK = False
 
 name = st.selectbox("Chọn mô hình", ORDER, format_func=lambda m: PROFILES[m]["title"])
-prof, alloc = PROFILES[name], allocation(name, base_set, ext_set, endog_cols=endog_list)
+prof, alloc = PROFILES[name], allocation(name, base_set, ext_set, endog_cols=endog_list, mode=meta.get("mode", "panel"))
 is_linear = prof["family"] == "linear"
 
 # =============================================================================== KHỐI 1
@@ -66,8 +72,12 @@ with st.container(border=True):
         st.write(alloc["label"])
         feats_info = [target + " (Y₁)"] + [f + " (Y)" for f in endog_list if f != target]
         exog_info = [f + " (X)" for f in alloc["feats"] if f not in endog_list]
-        st.caption(("Local — huấn luyện riêng từng tỉnh" if alloc["scope"] == "local" else "Global — huấn luyện 1 lần trên toàn panel")
-                   + " · Biến: " + ", ".join(feats_info + exog_info))
+        scope_desc = (
+            f"Wide Multivariate — học đồng thời {len(endog_list)} tỉnh nội sinh"
+            if alloc["scope"] == "wide" else
+            ("Local — huấn luyện riêng từng tỉnh" if alloc["scope"] == "local" else "Global — huấn luyện 1 lần trên toàn panel")
+        )
+        st.caption(scope_desc + " · Biến: " + ", ".join(feats_info + exog_info))
     st.caption(f"Cài đặt: {prof['impl']}")
 
 # =============================================================================== KHỐI 2
@@ -76,12 +86,12 @@ hp = {}
 levels_in = alloc["pkg"] == "A" and meta["A_mode"] == "levels"
 if is_linear:
     kp, kq = f"p_{name}", f"q_{name}"
-    st.session_state.setdefault(kp, 1)
-    st.session_state.setdefault(kq, 1)
+    st.session_state.setdefault(kp, 5 if name in ["VARX", "VARX-L"] else 2)
+    st.session_state.setdefault(kq, 2)
     exog_actual = [f for f in alloc["feats"] if f not in endog_list]
     has_x = bool(exog_actual)
     pkg_df = pk[alloc["pkg"]]
-    groups = dict(tuple(pkg_df.groupby(entity_col, observed=True)))
+    groups = None if is_wide else dict(tuple(pkg_df.groupby(entity_col, observed=True)))
 
     def order_for(g, crit_, mp, mq):
         cols = endog_list + exog_actual
@@ -96,9 +106,13 @@ if is_linear:
                     help="BIC phạt nặng số tham số dư thừa, giúp tránh hiện tượng bùng nổ phương sai (Curse of Dimensionality)")
     max_p = c2.number_input("p tối đa (tìm kiếm)", 1, 10, 3, key=f"maxp_{name}")
     max_q = c3.number_input("q tối đa (tìm kiếm)", 1, 10, 2, key=f"maxq_{name}", disabled=not has_x)
-    if st.button("Gợi ý tự động (p, q) từ AIC/BIC (trên tỉnh đại diện)"):
-        proxy = st.session_state.get("proxy_province") or ents[0]
-        grid, best = order_for(groups[proxy if proxy in groups else ents[0]], crit, max_p, max_q)
+    btn_lbl = "Gợi ý tự động (p, q) từ AIC/BIC" if is_wide else "Gợi ý tự động (p, q) từ AIC/BIC (trên tỉnh đại diện)"
+    if st.button(btn_lbl):
+        if is_wide:
+            grid, best = order_for(pkg_df, crit, max_p, max_q)
+        else:
+            proxy = st.session_state.get("proxy_province") or ents[0]
+            grid, best = order_for(groups[proxy if proxy in groups else ents[0]], crit, max_p, max_q)
         st.session_state[kp], st.session_state[kq] = best
         st.session_state[f"grid_{name}"] = (grid, crit)
     if st.session_state.get(f"grid_{name}"):
@@ -108,7 +122,8 @@ if is_linear:
     q1, q2, q3, q4 = st.columns(4)
     default_p = 5 if name in ["VARX", "VARX-L"] else 2
     default_q = 2 if has_x else 0
-    hp["p"] = int(q1.number_input("Bậc trễ p (của Y)", 1, 10, value=default_p, key=kp, help="KHUYẾN NGHỊ: p=2 cho VAR (tối ưu theo AIC), p=5 cho VARX (Model 2 tối ưu thực nghiệm)"))
+    hp["p"] = int(q1.number_input("Bậc trễ p (của Y)", 1, 10, value=default_p, key=kp,
+                                  help="KHUYẾN NGHỊ: p=2 cho VAR (tối ưu theo AIC), p=5 cho VARX (Model 2 tối ưu thực nghiệm)"))
     hp["q"] = int(q2.number_input("Bậc trễ q (của X)", 0, 10, value=default_q, key=kq, disabled=not has_x)) if has_x else 0
     hp["alpha"] = float(q3.number_input("Hệ số phạt Lasso λ", 0.0001, 5.0, 0.1, format="%.4f", key=f"lam_{name}")) \
         if name == "VARX-L" else None
@@ -117,8 +132,11 @@ if is_linear:
         if name in ["VAR", "VARX"] else 1.0
     if hp["p"] > 5:
         st.warning(f"⚠️ Cảnh báo: Bạn đang chọn p={hp['p']}. Với hệ nhiều biến, p quá lớn sẽ làm số tham số tăng gấp bội và làm tăng RMSE.")
-    hp["per_prov"] = st.checkbox("Tự chọn (p, q) riêng cho từng tỉnh theo AIC/BIC (bỏ qua ô p, q ở trên)", value=False,
-                                 key=f"pp_{name}")
+    if is_wide:
+        hp["per_prov"] = False
+    else:
+        hp["per_prov"] = st.checkbox("Tự chọn (p, q) riêng cho từng tỉnh theo AIC/BIC (bỏ qua ô p, q ở trên)", value=False,
+                                     key=f"pp_{name}")
     hp["ect"] = 0
     if name == "VARX" and meta["A_mode"] == "levels" and has_x:
         use_ect = st.checkbox(f"Dùng hiệu chỉnh sai số (VECM-X): thêm ECT với hạng r = {jr} từ Johansen", value=True,
@@ -135,8 +153,13 @@ else:
     hp["seq_len"] = int(e1.number_input("Độ dài chuỗi (seq_len)", 3, 60, 10, key=f"sl_{name}",
                                         help="Cửa sổ 10 ngày (Model 2 tối ưu thực nghiệm) giúp đạt RMSE thấp nhất"))
     hp["layers"] = int(e2.number_input("Số lớp LSTM", 1, 4, 1, key=f"ly_{name}"))
-    hp["emb"] = int(e3.number_input("Chiều embedding tỉnh", 0, 32, 4, key=f"em_{name}",
-                                    help="0 = không dùng mã hóa tỉnh"))
+    if is_wide:
+        e3.number_input("Chiều embedding tỉnh", 0, 32, 0, disabled=True, key=f"em_{name}",
+                        help="Chế độ Wide: các tỉnh là biến nội sinh đồng thời nên không dùng province embedding")
+        hp["emb"] = 0
+    else:
+        hp["emb"] = int(e3.number_input("Chiều embedding tỉnh", 0, 32, 4, key=f"em_{name}",
+                                        help="0 = không dùng mã hóa tỉnh"))
     hp["early"] = bool(e4.checkbox("Bật Early Stopping", value=True, key=f"es_{name}"))
     hp["patience"] = int(e5.number_input("Patience", 2, 100, 10, key=f"pa_{name}", disabled=not hp["early"]))
     if name in ["DeepVARX", "LSTM", "DeepVAR"]:
@@ -168,7 +191,8 @@ else:
                                           help="Dùng cơ chế Temporal Attention từ modules/models/lstm_attention.py")
     if not TORCH_OK:
         st.error("Chưa cài PyTorch — chạy `pip install torch` để huấn luyện mô hình học sâu.")
-    st.caption(f"Mô hình Global học trên toàn panel ({len(ents)} tỉnh) nên một epoch lâu hơn nhiều so với một tỉnh; nên thử ít epoch trước.")
+    if not is_wide:
+        st.caption(f"Mô hình Global học trên toàn panel ({len(ents)} tỉnh) nên một epoch lâu hơn nhiều so với một tỉnh; nên thử ít epoch trước.")
 
 # =============================================================================== KHỐI 3
 st.subheader("Cửa sổ huấn luyện")
@@ -193,34 +217,54 @@ if run:
     out = {"scope": alloc["scope"], "feats": alloc["feats"], "hp": hp, "history": None, "attn": None}
     if is_linear:
         src_info = "utils.var_model.VARModel" if name == "VAR" else "utils.varx_model.VARXModel"
-        log(f"[nạp mô hình] {src_info} (Huấn luyện {len(ents)} tỉnh theo cơ chế Local)")
-        preds, models = [], {}
-        for i, e in enumerate(ents, 1):
-            g = groups[e]
-            p_, q_ = (hp["p"], hp["q"])
-            if hp["per_prov"]:
-                _, best = order_for(g, crit, max_p, max_q)
-                p_, q_ = best[0], (best[1] if has_x else 0)
-            res, mdl = run_local_pkg(g, date_col, target, alloc["feats"], d, p_, q_, hp["alpha"], hp["ect"], 2, levels_in, endog_cols=endog_list, shrinkage=hp.get("shrinkage", 1.0))
-            res.insert(1, "province", e)
-            preds.append(res)
-            models[e] = mdl
-            m = metrics(res["y_true"], res["y_pred"], res.get("y_prev"))
-            dir_txt = f" · Đúng hướng={m['Đúng hướng (%)']:.1f}%" if "Đúng hướng (%)" in m else ""
-            log(f"[{i}/{len(ents)}] {e}: p={p_} q={q_} · RMSE={m['RMSE']:,.1f} · MAPE={m['MAPE (%)']:.2f}%{dir_txt}")
-            bar.progress(i / len(ents))
-        pred = pd.concat(preds, ignore_index=True)
-        out["model"] = models
+        if is_wide:
+            log(f"[nạp mô hình] {src_info} (Wide Multivariate · {len(endog_list)} tỉnh nội sinh)")
+            pred, mdl = run_wide_pkg(
+                pkg_df, meta["y_levels"], date_col, endog_list, alloc["feats"],
+                d, hp["p"], hp["q"], hp["alpha"], hp["ect"], 2, levels_in,
+                shrinkage=hp.get("shrinkage", 1.0), endog_labels=endog_labels,
+            )
+            for i, (e, g_p) in enumerate(pred.groupby("province", sort=False), 1):
+                m = metrics(g_p["y_true"], g_p["y_pred"], g_p.get("y_prev"))
+                dir_txt = f" · Đúng hướng={m['Đúng hướng (%)']:.1f}%" if "Đúng hướng (%)" in m else ""
+                log(f"[{i}/{len(endog_list)}] {e}: p={hp['p']} q={hp['q']} · RMSE={m['RMSE']:,.1f} · MAPE={m['MAPE (%)']:.2f}%{dir_txt}")
+            bar.progress(1.0)
+            out["model"] = mdl
+        else:
+            log(f"[nạp mô hình] {src_info} (Huấn luyện {len(ents)} tỉnh theo cơ chế Local)")
+            preds, models = [], {}
+            for i, e in enumerate(ents, 1):
+                g = groups[e]
+                p_, q_ = (hp["p"], hp["q"])
+                if hp["per_prov"]:
+                    _, best = order_for(g, crit, max_p, max_q)
+                    p_, q_ = best[0], (best[1] if has_x else 0)
+                res, mdl = run_local_pkg(g, date_col, target, alloc["feats"], d, p_, q_, hp["alpha"], hp["ect"], 2,
+                                         levels_in, endog_cols=endog_list, shrinkage=hp.get("shrinkage", 1.0))
+                res.insert(1, "province", e)
+                preds.append(res)
+                models[e] = mdl
+                m = metrics(res["y_true"], res["y_pred"], res.get("y_prev"))
+                dir_txt = f" · Đúng hướng={m['Đúng hướng (%)']:.1f}%" if "Đúng hướng (%)" in m else ""
+                log(f"[{i}/{len(ents)}] {e}: p={p_} q={q_} · RMSE={m['RMSE']:,.1f} · MAPE={m['MAPE (%)']:.2f}%{dir_txt}")
+                bar.progress(i / len(ents))
+            pred = pd.concat(preds, ignore_index=True)
+            out["model"] = models
     elif name == "DeepVAR":
-        from modules.models.deepvar import DeepVAR, DeepVARConfig
+        if is_wide:
+            piv_y = meta["y_levels"].sort_values(date_col).set_index(date_col)[
+                [c for c in endog_list if c in meta["y_levels"].columns]
+            ]
+            col_names_out = [endog_labels.get(c, c) for c in piv_y.columns]
+        else:
+            piv_y = pk["C"].pivot(index=date_col, columns=entity_col, values="y_level").sort_index()
+            piv_y = piv_y[[e for e in ents if e in piv_y.columns]]
+            col_names_out = list(piv_y.columns)
 
-        # Dựng ma trận nội sinh Y (T, K) từ bảng dữ liệu panel
-        piv_y = pk["C"].pivot(index=date_col, columns=entity_col, values="y_level").sort_index()
-        piv_y = piv_y[[e for e in ents if e in piv_y.columns]]
         Y_arr = piv_y.values.astype(np.float64)
         T, K = Y_arr.shape
 
-        is_train = piv_y.index <= pd.Timestamp(train_end)
+        is_train = pd.to_datetime(piv_y.index) <= pd.Timestamp(train_end)
         n_train_total = int(is_train.sum())
         n_val = max(1, int(n_train_total * 0.15))
         n_train = n_train_total - n_val
@@ -253,10 +297,10 @@ if run:
         test_dates = piv_y.index[idx]
 
         prov_preds = []
-        for col_i, e in enumerate(piv_y.columns):
+        for col_i, prov_name in enumerate(col_names_out):
             prov_preds.append(pd.DataFrame({
                 "date": test_dates,
-                "province": e,
+                "province": prov_name,
                 "y_true": piv_y.iloc[idx, col_i].values,
                 "y_pred": y_hat[:, col_i],
                 "y_prev": piv_y.iloc[idx - 1, col_i].values
@@ -264,11 +308,21 @@ if run:
         pred = pd.concat(prov_preds, ignore_index=True)
         out.update(model=model, history=pd.DataFrame(model.history_detail))
     else:
-        from modules.models.deepvarx import DeepVARX, prepare_panel_windows, train_model
+        from modules.models.deepvarx import DeepVARX, prepare_panel_windows, prepare_wide_windows, train_model
         from modules.models.lstm_attention import LSTMForecaster, LSTMAttentionForecaster
 
-        data = prepare_panel_windows(pk["C"], date_col, entity_col, target, alloc["feats"], hp["seq_len"], train_end,
-                                     meta["scalers"])
+        if is_wide:
+            exog_actual = [f for f in alloc["feats"] if f not in endog_list]
+            data = prepare_wide_windows(pk["C"], meta["y_levels"], date_col, endog_list, exog_actual,
+                                        hp["seq_len"], train_end)
+            n_out = len(endog_list)
+            n_prov_emb, emb_dim = 0, 0
+        else:
+            data = prepare_panel_windows(pk["C"], date_col, entity_col, target, alloc["feats"], hp["seq_len"],
+                                         train_end, meta["scalers"])
+            n_out = 1
+            n_prov_emb, emb_dim = len(ents), hp["emb"]
+
         n_in = len(data["cols"])
         if name == "DeepVARX":
             Cls = DeepVARX
@@ -281,9 +335,9 @@ if run:
             src_name = f"utils.lstm_model.CoffeeLSTM ({name})"
 
         use_res = hp.get("use_residual", True)
-        model = Cls(n_in, hp["hidden"], hp["layers"], 0.1, len(ents), hp["emb"], residual=use_res)
+        model = Cls(n_in, hp["hidden"], hp["layers"], 0.1, n_prov_emb, emb_dim, residual=use_res, n_out=n_out)
         log(f"[nạp mô hình] {src_name} (Residual Learning: {'Bật' if use_res else 'Tắt'})")
-        log(f"[model] {name} · {n_in} biến vào · hidden={hp['hidden']} · embedding tỉnh={hp['emb']} · "
+        log(f"[model] {name} · {n_in} biến vào · {n_out} biến ra · hidden={hp['hidden']} · embedding tỉnh={emb_dim} · "
             f"windows train/val/test={len(data['Xtr']):,}/{len(data['Xva']):,}/{len(data['Xte']):,}")
 
         def cb(ep, total, trl, val):
@@ -297,19 +351,39 @@ if run:
                          loss_type=hp.get("loss_type", "huber"), huber_beta=hp.get("huber_beta", 1.0))
         if hp["early"]:
             log(f"[early-stopping] epoch tốt nhất = {tr['best_epoch']}")
-        pred = pd.DataFrame({"date": data["dates_te"], "province": data["prov_te"], "y_true": data["true_te"],
-                             "y_pred": tr["pred_scaled"] * data["sd_te"] + data["mu_te"], "y_prev": data["prev_te"]})
+
+        if is_wide:
+            pred_mat = np.asarray(tr["pred_scaled"], dtype=float)
+            if pred_mat.ndim == 1:
+                pred_mat = pred_mat[:, None]
+            prov_preds = []
+            for col_i, ecol in enumerate(endog_list):
+                mu_k, sd_k = meta["scalers"][ecol]
+                prov_preds.append(pd.DataFrame({
+                    "date": data["dates_te"],
+                    "province": endog_labels.get(ecol, ecol),
+                    "y_true": data["true_te"][:, col_i],
+                    "y_pred": pred_mat[:, col_i] * sd_k + mu_k,
+                    "y_prev": data["prev_te"][:, col_i],
+                }))
+            pred = pd.concat(prov_preds, ignore_index=True)
+            prov_attn = np.full(len(data["dates_te"]), "Toàn hệ thống (Đa tỉnh)", dtype=object)
+        else:
+            pred = pd.DataFrame({"date": data["dates_te"], "province": data["prov_te"], "y_true": data["true_te"],
+                                 "y_pred": tr["pred_scaled"] * data["sd_te"] + data["mu_te"], "y_prev": data["prev_te"]})
+            prov_attn = data["prov_te"]
+
         out.update(model=model, history=tr["history"])
         if "attn_test" in tr or "attn_time" in tr:
-            out["attn"] = {"cols": data["cols"], "test": tr.get("attn_test"), "dates": data["dates_te"], "prov": data["prov_te"],
-                           "epoch": tr.get("attn_epoch"), "lag": tr.get("attn_lag"), "time": tr.get("attn_time"),
-                           "best_epoch": tr.get("best_epoch")}
+            out["attn"] = {"cols": data["cols"], "endog_cols": list(endog_list), "test": tr.get("attn_test"),
+                           "dates": data["dates_te"], "prov": prov_attn, "epoch": tr.get("attn_epoch"),
+                           "lag": tr.get("attn_lag"), "time": tr.get("attn_time"), "best_epoch": tr.get("best_epoch")}
+
     by = pd.DataFrame([{"province": e, **metrics(g["y_true"], g["y_pred"], g.get("y_prev"))} for e, g in pred.groupby("province")])
     metric_cols = [c for c in ["RMSE", "MAE", "MAPE (%)", "sMAPE (%)", "R²", "Đúng hướng (%)"] if c in by.columns]
     avg = {k: float(by[k].mean()) for k in metric_cols}
     out.update(pred=pred, by_prov=by, metrics=avg, seconds=time.perf_counter() - t0)
 
-    # Tính mốc tham chiếu Naive Benchmark để so sánh trực tiếp
     naive_m = metrics(pred["y_true"], pred["y_prev"])
     naive_rmse = naive_m["RMSE"]
     naive_mae = naive_m["MAE"]
@@ -342,7 +416,7 @@ elif prev is not None:
 # =============================================================================== TRẠNG THÁI
 st.divider()
 trained = st.session_state.get("results") or {}
-rows = [{"Mô hình": m, "Phạm vi": allocation(m, base_set, ext_set)["scope"],
+rows = [{"Mô hình": m, "Phạm vi": allocation(m, base_set, ext_set, endog_cols=endog_list, mode=meta.get("mode", "panel"))["scope"],
          "Trạng thái": "Đã huấn luyện" if m in trained else "⬜ Chưa",
          "RMSE TB (VNĐ/kg)": trained[m]["metrics"]["RMSE"] if m in trained else np.nan,
          "MAE TB (VNĐ/kg)": trained[m]["metrics"]["MAE"] if m in trained else np.nan,
