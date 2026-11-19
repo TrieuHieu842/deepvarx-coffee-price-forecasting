@@ -93,11 +93,11 @@ def infer_model_config(model_name: str) -> str:
     if "naive" in m:
         return "p=0, no_params, P_hat_t=P_{t-1}"
     if "var(1)" in m:
-        return "p=1_lag, endog_only(3_provinces), OLS"
+        return "p=1_lag, endog_only(4_provinces), OLS"
     if "var(2)" in m:
-        return "p=2_lags, endog_only(3_provinces), OLS"
+        return "p=2_lags, endog_only(4_provinces), OLS"
     if "var(5)" in m:
-        return "p=5_lags, endog_only(3_provinces), OLS"
+        return "p=5_lags, endog_only(4_provinces), OLS"
     if "varx 1" in m:
         return "p=5, q=2, vars=5(London+FX), penalty=none, OLS"
     if "varx-l 2" in m:
@@ -107,19 +107,19 @@ def infer_model_config(model_name: str) -> str:
     if "varx 3" in m:
         return "p=5, q=2, vars=20(Full_exogenous), penalty=none, OLS"
     if "lstm 1" in m:
-        return "seq=10, hidden=64, layers=1, drop=0.0, vars=3(univariate_returns)"
+        return "seq=10, hidden=64, layers=1, drop=0.0, vars=4(univariate_returns)"
     if "lstm 2" in m:
         return "seq=10, hidden=64, layers=1, drop=0.1, vars=11(core_exog)"
     if "lstm 3" in m:
         return "seq=10, hidden=64, layers=1, drop=0.2, in_drop=0.2, vars=20(full_exog)"
     if "deepvar 1" in m:
-        return "seq=10, hidden=64, cov_hidden=32, layers=2, rank=2, drop=0.0, Gaussian_NLL, vars=3(returns)"
+        return "seq=10, hidden=64, cov_hidden=32, layers=2, rank=2, drop=0.0, Gaussian_NLL, vars=4(returns)"
     if "deepvar 2" in m:
         return "seq=10, hidden=64, cov_hidden=32, layers=2, rank=2, drop=0.1, Gaussian_NLL, vars=11(core)"
     if "deepvar 3" in m:
         return "seq=10, hidden=64, cov_hidden=32, layers=2, rank=2, drop=0.2, in_drop=0.2, Gaussian_NLL, vars=20(full)"
     if "deepvarx 1" in m:
-        return "seq=10, hidden=64, cov_hidden=32, layers=2, rank=2, drop=0.0, cross_attn=True, Gaussian_NLL, vars=3(baseline)"
+        return "seq=10, hidden=64, cov_hidden=32, layers=2, rank=2, drop=0.0, cross_attn=True, Gaussian_NLL, vars=4(baseline)"
     if "deepvarx 2" in m:
         return "seq=10, hidden=64, cov_hidden=32, layers=2, rank=2, drop=0.15, in_drop=0.1, cross_attn=True, Gaussian_NLL, vars=11(core)"
     if "deepvarx 3" in m:

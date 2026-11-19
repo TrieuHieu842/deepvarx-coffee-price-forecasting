@@ -1,6 +1,6 @@
 """Adapter to extract and export standardized test forecasts from project models.
 
-Extracts test forecasts (542 days x 3 target provinces) for:
+Extracts test forecasts (542 days x 4 target provinces) for:
 - Naive (Random Walk)
 - VAR(1), VAR(2), VAR(5)
 - VARX 1, VARX 2, VARX-L 2 (Ridge), VARX 3

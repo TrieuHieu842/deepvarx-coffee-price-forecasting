@@ -1,6 +1,7 @@
 """Bộ định tuyến dữ liệu (Data Dispatcher): cắt dữ liệu sạch thành 3 gói vật lý A, B, C (hỗ trợ cả Panel và Bảng rộng đa tỉnh)."""
 from __future__ import annotations
 
+import json
 import numpy as np
 import pandas as pd
 
@@ -21,8 +22,8 @@ def build_packages(panel: pd.DataFrame, date_col: str, entity_col: str | None, t
                    endog_cols: list[str] | None = None, mode: str | None = None,
                    endog_labels: dict[str, str] | None = None, **kwargs) -> tuple[dict, dict]:
     """Gói A: Tập Cơ Sở (sai phân bậc d; hoặc mức gốc nếu base_model='VECM'). Dùng cho VAR/VECM, VARX.
-    Gói B: Tập Mở Rộng sai phân bậc d. Dùng cho VARX-L.
-    Gói C: Tập Mở Rộng mức gốc (d=0), Standard Scaler (theo từng tỉnh ở Panel, hoặc trên TRAIN ở Wide).
+    Gói B: Tập Mở Rộng sai phân bậc d (lưu trữ mở rộng).
+    Gói C: Tập Mở Rộng mức gốc (d=0), Standard Scaler (theo từng tỉnh ở Panel, hoặc trên TRAIN ở Wide). Dùng cho LSTM, DeepVAR, DeepVARX.
     Mọi gói có cột `split` (train/test theo mốc ngày chung) và `y_level` (giá gốc VNĐ/kg)."""
     if endog_cols is None and "endog_cols" in kwargs:
         endog_cols = kwargs["endog_cols"]
@@ -102,4 +103,29 @@ def build_packages(panel: pd.DataFrame, date_col: str, entity_col: str | None, t
         for k, f in PKG_FILES.items():
             pk[k].to_csv(DATA_PROC / f, index=False)
             meta["paths"][k] = str(DATA_PROC / f)
+        try:
+            meta_json = {k: v for k, v in meta.items() if k != "y_levels"}
+            meta_json["train_end"] = str(meta["train_end"])
+            with open(DATA_PROC / "pkg_meta.json", "w", encoding="utf-8") as fp:
+                json.dump(meta_json, fp, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
     return pk, meta
+
+
+def load_saved_packages() -> tuple[dict, dict] | tuple[None, None]:
+    """Tự động tải lại 3 gói dữ liệu A, B, C và meta từ thư mục data/processed nếu đã tồn tại."""
+    meta_path = DATA_PROC / "pkg_meta.json"
+    if not meta_path.exists():
+        return None, None
+    for k, f in PKG_FILES.items():
+        if not (DATA_PROC / f).exists():
+            return None, None
+    try:
+        with open(meta_path, "r", encoding="utf-8") as fp:
+            meta = json.load(fp)
+        meta["train_end"] = pd.Timestamp(meta["train_end"])
+        pk = {k: pd.read_csv(DATA_PROC / f) for k, f in PKG_FILES.items()}
+        return pk, meta
+    except Exception:
+        return None, None

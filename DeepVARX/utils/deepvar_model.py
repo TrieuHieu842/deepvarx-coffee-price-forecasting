@@ -49,7 +49,7 @@ from statsmodels.tsa.stattools import adfuller
 from torch.distributions import LowRankMultivariateNormal
 from torch.utils.data import DataLoader, TensorDataset
 
-TARGET_PROVINCES: List[str] = ["dak_lak", "lam_dong", "gia_lai"]
+TARGET_PROVINCES: List[str] = ["dak_lak", "lam_dong", "gia_lai", "dak_nong"]
 
 CORE_WEATHER_COLS: List[str] = ["temp_mean", "precip_nasa", "humidity_air"]
 EXT_WEATHER_COLS: List[str] = ["d_soil_moisture", "solar_radiation", "wind_speed_2m"]

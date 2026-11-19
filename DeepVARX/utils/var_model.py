@@ -16,7 +16,7 @@ import pandas as pd
 from scipy import stats
 from sklearn.linear_model import LinearRegression
 
-TARGET_PROVINCES: List[str] = ["dak_lak", "lam_dong", "gia_lai"]
+TARGET_PROVINCES: List[str] = ["dak_lak", "lam_dong", "gia_lai", "dak_nong"]
 
 
 @dataclass

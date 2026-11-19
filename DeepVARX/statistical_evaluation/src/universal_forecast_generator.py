@@ -8,8 +8,8 @@ Covers:
 5. DeepVAR Family: DeepVAR 1, DeepVAR 2, DeepVAR 3 (configured with 2 LSTM layers)
 6. DeepVARX Family: DeepVARX 1, DeepVARX 2, DeepVARX 3 (configured with 2 LSTM layers)
 
-All models evaluated strictly on the 542 test days (2024-10-03 to 2026-10-30) across 3 provinces:
-dak_lak, lam_dong, gia_lai.
+All models evaluated strictly on the 542 test days (2024-10-03 to 2026-10-30) across 4 provinces:
+dak_lak, lam_dong, gia_lai, dak_nong.
 """
 from __future__ import annotations
 
@@ -167,7 +167,7 @@ def generate_all_model_forecasts(
             pred_p,
             family="VAR",
             details=f"p={p} lags",
-            model_config=f"p={p}_lags, endog_only(3_provinces), OLS",
+            model_config=f"p={p}_lags, endog_only(4_provinces), OLS",
             prediction_type="point",
         )
 

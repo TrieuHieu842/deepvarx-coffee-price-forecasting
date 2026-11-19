@@ -26,13 +26,13 @@ def test_input_dataset_completeness_17_models():
     found_models = set(df["model"].unique())
     assert found_models == expected_models, f"Missing models: {expected_models - found_models}"
 
-    expected_provinces = {"dak_lak", "lam_dong", "gia_lai"}
+    expected_provinces = {"dak_lak", "lam_dong", "gia_lai", "dak_nong"}
     assert set(df["province"].unique()) == expected_provinces
 
-    # Verify counts per model: 3 provinces * 542 test days = 1626 observations
+    # Verify counts per model: 4 provinces * 542 test days = 2168 observations
     counts = df.groupby("model").size()
     for m in expected_models:
-        assert counts[m] == 1626, f"Model {m} has {counts[m]} observations, expected 1626"
+        assert counts[m] == 2168, f"Model {m} has {counts[m]} observations, expected 2168"
 
 
 def test_ground_truth_consistency_across_models():
@@ -62,7 +62,7 @@ def test_summary_results_integrity():
     assert SUMMARY_CSV.exists()
     df_sum = pd.read_csv(SUMMARY_CSV)
 
-    assert len(df_sum) == 861  # (136*2 + 15) * 3 provinces = 861
+    assert len(df_sum) == 1148  # (136*2 + 15) * 4 provinces = 1148
     assert df_sum["dm_stat"].notna().all()
     assert df_sum["hln_stat"].notna().all()
     assert df_sum["hln_p_value"].notna().all()

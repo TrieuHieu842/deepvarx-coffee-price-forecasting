@@ -30,21 +30,22 @@ st.markdown(
     Hệ thống này được xây dựng nhằm hỗ trợ quá trình phân tích dữ liệu, lựa chọn biến và đưa ra dự báo giá thu mua cà phê tại thị trường Việt Nam. 
     Điểm cốt lõi của đề tài là ứng dụng chiến lược **Phễu lọc hai luồng** để sàng lọc và chốt bộ biến tối ưu nhất.
     
-    Hệ thống cung cấp môi trường thử nghiệm toàn diện cho các mô hình chuỗi thời gian đa biến, bao gồm các mô hình thống kê truyền thống (VAR, VARX, VARX-L), 
+    Hệ thống cung cấp môi trường thử nghiệm toàn diện cho các mô hình chuỗi thời gian đa biến, bao gồm các mô hình thống kê truyền thống (VAR, VARX), 
     các mô hình học sâu (LSTM, DeepVAR) và mô hình đề xuất **DeepVARX**.
     """
 )
 
 # 4. CÁC THÔNG TIN GIỚI THIỆU KHÁC
 st.subheader("Quy trình hệ thống")
-c = st.columns(6)
+c = st.columns(7)
 cards = [
     ("1. Tải dữ liệu", "Phễu lọc chung: xử lý khoảng trống, tần suất giả, đa cộng tuyến."),
     ("2. Tuyến tính", "Các kiểm định: ADF/KPSS, CCF, Granger-HC1, Johansen."),
     ("3. Phi tuyến", "Các kiểm định: BDS, Mutual Information, XGBoost, Ljung-Box/VR."),
-    ("4. Chốt biến", "Lập Evidence Matrix, chia 2 giỏ biến, xuất 3 file CSV."),
-    ("5. Mô hình", "Thiết lập hồ sơ 6 mô hình, tinh chỉnh siêu tham số và huấn luyện."),
-    ("6. Báo cáo", "Đánh giá Metric, DM test, phân tích phần dư và Attention Heatmap."),
+    ("4. Chốt biến", "Lập Evidence Matrix, chia 2 giỏ biến, xuất file CSV."),
+    ("5. Mô hình", "Thiết lập hồ sơ 5 mô hình, tinh chỉnh siêu tham số và huấn luyện."),
+    ("6. Báo cáo", "Đánh giá Metric, đường dự báo, phân tích phần dư và Attention Heatmap."),
+    ("7. Kiểm định DM", "Kiểm định thống kê so sánh độ chính xác dự báo giữa các mô hình."),
 ]
 for col, (t, body) in zip(c, cards):
     with col:

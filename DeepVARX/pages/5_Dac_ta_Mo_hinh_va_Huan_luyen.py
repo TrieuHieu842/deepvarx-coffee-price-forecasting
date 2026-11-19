@@ -21,9 +21,36 @@ from modules.model_specs import ORDER, PROFILES, allocation
 from modules.models.baseline_varx import run_local_pkg, run_wide_pkg, select_order
 from modules.models.deepvar import DeepVAR, DeepVARConfig
 from modules.ui import require, setup_page
+import modules.dispatcher
 
 setup_page("5 · Đặc tả mô hình & Huấn luyện")
 st.title("Trang 5 · Đặc tả mô hình & Huấn luyện")
+
+def _try_auto_load_processed():
+    if any(k not in st.session_state or st.session_state[k] is None for k in ["packages", "pkg_meta", "base_set", "ext_set"]):
+        pk_saved, meta_saved = modules.dispatcher.load_saved_packages()
+        if pk_saved is not None and meta_saved is not None:
+            st.session_state["packages"] = pk_saved
+            st.session_state["pkg_meta"] = meta_saved
+            st.session_state["base_set"] = meta_saved.get("base", [])
+            st.session_state["ext_set"] = meta_saved.get("ext", [])
+            st.session_state["target"] = meta_saved.get("target", "price_dak_lak")
+            st.session_state["endog_cols"] = meta_saved.get("endog_cols", [])
+            st.session_state["train_end"] = meta_saved.get("train_end")
+            st.session_state["d"] = meta_saved.get("d", 1)
+            st.session_state["base_model"] = meta_saved.get("base_model", "VAR")
+            st.session_state["export_paths"] = meta_saved.get("paths", {})
+
+def _try_auto_load_results():
+    if not st.session_state.get("results"):
+        from modules.result_manager import load_all_saved_results
+        loaded = load_all_saved_results()
+        if loaded:
+            st.session_state["results"] = loaded
+
+_try_auto_load_processed()
+_try_auto_load_results()
+
 require(["packages", "pkg_meta", "base_set", "ext_set"],
         "Cần hoàn tất Trang 1–4 (bấm **XÁC NHẬN BỘ BIẾN & TẠO DỮ LIỆU HUẤN LUYỆN** ở Trang 4).")
 
@@ -40,7 +67,7 @@ if is_wide:
     st.caption(f"Chế độ **Wide Multivariate**: mọi mô hình được huấn luyện đồng thời trên **{len(endog_list)}** cột giá tỉnh Việt Nam "
                f"({', '.join(endog_labels.get(c, c) for c in endog_list)}) và quy dự báo về VNĐ/kg.")
 else:
-    st.caption("Mô hình **Local** (VAR, VARX, VARX-L) được huấn luyện riêng cho từng tỉnh; mô hình **Global** (LSTM, DeepVAR, DeepVARX) "
+    st.caption("Mô hình **Local** (VAR, VARX) được huấn luyện riêng cho từng tỉnh; mô hình **Global** (LSTM, DeepVAR, DeepVARX) "
                "huấn luyện **một lần** trên toàn panel rồi tách dự báo theo tỉnh. Mọi dự báo quy về VNĐ/kg.")
 
 try:
@@ -86,7 +113,7 @@ hp = {}
 levels_in = alloc["pkg"] == "A" and meta["A_mode"] == "levels"
 if is_linear:
     kp, kq = f"p_{name}", f"q_{name}"
-    st.session_state.setdefault(kp, 5 if name in ["VARX", "VARX-L"] else 2)
+    st.session_state.setdefault(kp, 5 if name == "VARX" else 2)
     st.session_state.setdefault(kq, 2)
     exog_actual = [f for f in alloc["feats"] if f not in endog_list]
     has_x = bool(exog_actual)
@@ -119,19 +146,17 @@ if is_linear:
         grid, c_used = st.session_state[f"grid_{name}"]
         st.caption(f"Top gợi ý theo {c_used} (đã điền vào ô bên dưới):")
         st.dataframe(grid.head(5).style.format({c_used: "{:.1f}"}), width="stretch", hide_index=True)
-    q1, q2, q3, q4 = st.columns(4)
-    default_p = 5 if name in ["VARX", "VARX-L"] else 2
+    q1, q2, q3 = st.columns(3)
+    default_p = 5 if name == "VARX" else 2
     default_q = 2 if has_x else 0
     hp["p"] = int(q1.number_input("Bậc trễ p (của Y)", 1, 10, value=default_p, key=kp,
                                   help="KHUYẾN NGHỊ: p=2 cho VAR (tối ưu theo AIC), p=5 cho VARX (Model 2 tối ưu thực nghiệm)"))
     hp["q"] = int(q2.number_input("Bậc trễ q (của X)", 0, 10, value=default_q, key=kq, disabled=not has_x)) if has_x else 0
-    hp["alpha"] = float(q3.number_input("Hệ số phạt Lasso λ", 0.0001, 5.0, 0.1, format="%.4f", key=f"lam_{name}")) \
-        if name == "VARX-L" else None
-    hp["shrinkage"] = float(q4.slider("Shrinkage γ (Co cụm)", 0.1, 1.0, 0.85, step=0.05, key=f"sh_{name}",
-                                      help="Damping biên độ nhảy của OLS: giữ nguyên 100% tỷ lệ đoán đúng hướng và triệt tiêu lỗi overshooting")) \
-        if name in ["VAR", "VARX"] else 1.0
+    hp["alpha"] = None
+    hp["shrinkage"] = float(q3.slider("Shrinkage γ (Co cụm)", 0.1, 1.0, 0.85, step=0.05, key=f"sh_{name}",
+                                      help="Damping biên độ nhảy của OLS: giữ nguyên 100% tỷ lệ đoán đúng hướng và triệt tiêu lỗi overshooting"))
     if hp["p"] > 5:
-        st.warning(f"⚠️ Cảnh báo: Bạn đang chọn p={hp['p']}. Với hệ nhiều biến, p quá lớn sẽ làm số tham số tăng gấp bội và làm tăng RMSE.")
+        st.warning(f"Cảnh báo: Bạn đang chọn p={hp['p']}. Với hệ nhiều biến, p quá lớn sẽ làm số tham số tăng nhanh và dễ gây quá khớp (overfitting).")
     if is_wide:
         hp["per_prov"] = False
     else:
@@ -398,14 +423,18 @@ if run:
     naive_r2_txt = f" · R²={naive_m['R²']:.4f}" if "R²" in naive_m else ""
     log(f"[so sánh] Naive Benchmark (giữ nguyên giá hôm trước): RMSE={naive_rmse:,.1f} · MAE={naive_mae:,.1f}{naive_smape_txt}{naive_r2_txt}")
     if avg['RMSE'] < naive_rmse:
-        log(f"🏆 CHÚC MỪNG: Mô hình {name} đã ĐÁNH BẠI Naive Benchmark (RMSE thấp hơn {naive_rmse - avg['RMSE']:,.1f} VNĐ/kg)!")
+        log(f"[kết quả] Mô hình {name} có sai số RMSE thấp hơn Naive Benchmark ({naive_rmse - avg['RMSE']:,.1f} VNĐ/kg).")
     elif abs(avg['RMSE'] - naive_rmse) < 100:
-        log(f"✅ Mô hình {name} bám sát và tương đương Naive Benchmark!")
+        log(f"[kết quả] Mô hình {name} có sai số tương đương Naive Benchmark.")
 
     out["log"] = "\n".join(lines)
     store[name] = out
     st.session_state["results"] = store
-    st.success(f"Đã huấn luyện {name} ({alloc['scope']}) và lưu vào session_state.")
+
+    from modules.result_manager import save_model_run
+    saved_paths = save_model_run(name, out, alloc_info=alloc, meta=meta)
+    st.success(f"Đã hoàn thành huấn luyện {name} ({alloc['scope']}) và lưu kết quả vào data/results/.")
+    st.toast(f"Đã lưu kết quả của mô hình {name}.")
 elif prev is not None:
     bar.progress(1.0)
     term.code(prev["log"], language="text")
@@ -417,7 +446,7 @@ elif prev is not None:
 st.divider()
 trained = st.session_state.get("results") or {}
 rows = [{"Mô hình": m, "Phạm vi": allocation(m, base_set, ext_set, endog_cols=endog_list, mode=meta.get("mode", "panel"))["scope"],
-         "Trạng thái": "Đã huấn luyện" if m in trained else "⬜ Chưa",
+         "Trạng thái": "Đã huấn luyện" if m in trained else "Chưa huấn luyện",
          "RMSE TB (VNĐ/kg)": trained[m]["metrics"]["RMSE"] if m in trained else np.nan,
          "MAE TB (VNĐ/kg)": trained[m]["metrics"]["MAE"] if m in trained else np.nan,
          "MAPE (%)": trained[m]["metrics"].get("MAPE (%)", np.nan) if m in trained else np.nan,
@@ -426,4 +455,4 @@ rows = [{"Mô hình": m, "Phạm vi": allocation(m, base_set, ext_set, endog_col
          "Đúng hướng (%)": trained[m]["metrics"].get("Đúng hướng (%)", np.nan) if m in trained else np.nan} for m in ORDER]
 st.dataframe(pd.DataFrame(rows).style.format({"RMSE TB (VNĐ/kg)": "{:,.1f}", "MAE TB (VNĐ/kg)": "{:,.1f}", "MAPE (%)": "{:.2f}%", "sMAPE (%)": "{:.2f}%", "R²": "{:.4f}", "Đúng hướng (%)": "{:.1f}%"}, na_rep="–"), width="stretch", hide_index=True)
 if trained:
-    st.page_link("pages/6_Bao_cao_Thuc_nghiem.py", label="Sang Trang 6 · Báo cáo thực nghiệm →", icon="📑")
+    st.page_link("pages/6_Bao_cao_Thuc_nghiem.py", label="Chuyển sang Trang 6 · Báo cáo thực nghiệm")

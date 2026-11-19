@@ -1,7 +1,7 @@
-"""Hồ sơ học thuật (Academic Profile) và quy tắc cấp phát dữ liệu cho 6 mô hình."""
+"""Hồ sơ học thuật (Academic Profile) và quy tắc cấp phát dữ liệu cho 5 mô hình."""
 from __future__ import annotations
 
-ORDER = ["VAR", "VARX", "VARX-L", "LSTM", "DeepVAR", "DeepVARX"]
+ORDER = ["VAR", "VARX", "LSTM", "DeepVAR", "DeepVARX"]
 
 PROFILES = {
     "VAR": {
@@ -20,14 +20,6 @@ PROFILES = {
         "pros": ["Khai thác thông tin vĩ mô, thời tiết (X)"],
         "cons": ["Nhạy cảm với đa cộng tuyến", "Dễ overfit nếu chọn sai biến X"],
         "impl": "Dùng j = 1..q (không dùng X_t) để dự báo 1 bước không cần X tương lai. Nếu Johansen cho r > 0 (VECM), thêm số hạng hiệu chỉnh sai số ECT = β′Z_t (β từ Johansen, ước lượng trên TRAIN).",
-    },
-    "VARX-L": {
-        "title": "VARX-L (VARX với Lasso Regularization)", "family": "linear",
-        "latex": [r"\min_{c,\Phi,B}\; \sum_t \lVert Y_t - \hat Y_t \rVert^2 \;+\; \lambda \sum \lvert \Phi \rvert \;+\; \lambda \sum \lvert B \rvert"],
-        "use": "Tự động chọn lọc đặc trưng (Feature Selection) trong không gian nhiều biến.",
-        "pros": ["Ép trọng số các biến nhiễu về 0", "Giải quyết tốt đa cộng tuyến"],
-        "cons": ["Phải chọn hệ số phạt λ", "Hệ số bị co (thiên lệch) nên khó đọc như OLS"],
-        "impl": "Lasso / MultiTaskLasso (sklearn), chạy Local theo tỉnh (Panel) hoặc đồng thời K tỉnh (Wide); λ = hệ số phạt bên dưới.",
     },
     "LSTM": {
         "title": "LSTM (Long Short-Term Memory)", "family": "deep",
@@ -70,7 +62,6 @@ def allocation(name: str, base: list[str], ext: list[str], endog_cols: list[str]
     table = {
         "VAR": ("Mô hình đa biến VAR (chỉ dùng hệ biến nội sinh Y)", "A", list(other_endog), "local"),
         "VARX": ("Mô hình đa biến tuyến tính VARX (Y + X)", "A", list(other_endog + [c for c in base if c not in other_endog]), "local"),
-        "VARX-L": ("Mô hình đa biến tuyến tính có phạt Lasso VARX-L (Y + X)", "B", list(other_endog + [c for c in ext if c not in other_endog]), "local"),
         "LSTM": ("Mô hình học sâu LSTM (Y + X)", "C", list(other_endog + [c for c in ext if c not in other_endog]), "global"),
         "DeepVAR": ("Mô hình học sâu DeepVAR (chỉ dùng hệ biến nội sinh Y)", "C", list(other_endog), "global"),
         "DeepVARX": ("Mô hình học sâu DeepVARX (Y + X)", "C", list(other_endog + [c for c in ext if c not in other_endog]), "global"),

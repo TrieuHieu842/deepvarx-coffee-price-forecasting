@@ -29,8 +29,8 @@ def reset_downstream(step: str) -> None:
         st.session_state.pop(k, None)
 
 
-def setup_page(title: str, icon: str = "☕") -> None:
-    st.set_page_config(page_title=f"DeepVARX · {title}", page_icon=icon, layout="wide")
+def setup_page(title: str, icon: str = "") -> None:
+    st.set_page_config(page_title=f"DeepVARX · {title}", page_icon=icon if icon else None, layout="wide")
     if CSS_PATH.exists():
         st.markdown(f"<style>{CSS_PATH.read_text(encoding='utf-8')}</style>", unsafe_allow_html=True)
     sidebar_status()
@@ -43,7 +43,8 @@ def sidebar_status() -> None:
         for key, label in STEPS:
             done = st.session_state.get(key) is not None
             shown = "Trang 1 · Dữ liệu sạch (đa biến)" if (is_wide and key == "df_clean_panel") else label
-            st.markdown(f"{'✅' if done else '⬜'} {shown}")
+            status_tag = "Đã xong" if done else "Chưa xong"
+            st.markdown(f"- {shown}: `{status_tag}`")
         if st.session_state.get("df_master") is not None:
             st.divider()
             if is_wide:

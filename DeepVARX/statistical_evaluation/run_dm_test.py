@@ -92,8 +92,8 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--loss",
         nargs="+",
-        default=["mse", "mae"],
-        help="Danh sách các hàm mất mát: 'mse', 'mae', 'crps' (mặc định: mse mae).",
+        default=["mse", "mae", "crps"],
+        help="Danh sách các hàm mất mát: 'mse', 'mae', 'crps' (mặc định: mse mae crps).",
     )
     parser.add_argument(
         "--alpha",

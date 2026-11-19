@@ -98,7 +98,7 @@ with tab1:
     rec = max(0, min(2, rec))
     c1, c2 = st.columns([1, 3])
     d_pick = c1.number_input("Bậc sai phân d (chung)", 0, 2, rec)
-    c2.info(f"Đề xuất: **d = {rec}** (lớn nhất trong các biến). \n VARX/VARX-L bắt buộc dùng dữ liệu đã sai phân bậc d; "
+    c2.info(f"Đề xuất: **d = {rec}** (lớn nhất trong các biến). \n VAR/VARX bắt buộc dùng dữ liệu đã sai phân bậc d; "
             "luồng 2 (Deep) được phép dùng dữ liệu gốc.")
     if d_pick == 0:
         st.warning("d = 0: các kiểm định CCF/Granger trên mức giá gốc dễ cho hồi quy giả nếu chuỗi có nghiệm đơn vị.")

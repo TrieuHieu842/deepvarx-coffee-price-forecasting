@@ -14,10 +14,19 @@ from modules.model_specs import ORDER
 from modules.stat_tests import dm_from_loss_diff, ljung_box
 from modules.ui import fmt_p, require, setup_page
 
-setup_page("6 · Báo cáo thực nghiệm")
+setup_page("6 · Báo cáo thực nghiệm", icon="")
 st.title("Trang 6 · Báo cáo thực nghiệm & khám phá chuyên sâu")
 st.caption("Mọi sai số tính trên **mức giá gốc (VNĐ/kg)**, dự báo 1 bước trên đoạn TEST chung. Kết quả được báo cáo **theo từng tỉnh** "
            "và **trung bình các tỉnh**.")
+if "results" not in st.session_state or not st.session_state["results"]:
+    from modules.result_manager import load_all_saved_results
+    res_loaded = load_all_saved_results()
+    if res_loaded:
+        st.session_state["results"] = res_loaded
+
+if "target" not in st.session_state:
+    st.session_state["target"] = "Giá cà phê Đắk Lắk"
+
 require(["results"], "Chưa có mô hình nào được huấn luyện. Hãy huấn luyện ở **Trang 5**.")
 res = st.session_state["results"]
 if not res:
@@ -58,13 +67,29 @@ with tab1:
             naive_row[k] = float(naive_by[k].mean())
     rows.append(naive_row)
     tbl = pd.DataFrame(rows)
+
+    group_map_p6 = {
+        "DeepVARX": "Học sâu có biến ngoại sinh",
+        "DeepVAR": "Học sâu",
+        "LSTM": "Học sâu",
+        "VARX": "Kinh tế lượng có biến ngoại sinh",
+        "VAR": "Kinh tế lượng chuỗi giá",
+        "Naive (tham chiếu)": "Tham chiếu cơ sở",
+    }
+    tbl["Nhóm mô hình"] = tbl["Mô hình"].map(lambda m: group_map_p6.get(m, "Khác"))
+
     if "VAR" in res:
         base = res["VAR"]["metrics"]["RMSE"]
         tbl["Mức cải thiện so với VAR (%)"] = (base - tbl["RMSE"]) / base * 100
     else:
         tbl["Mức cải thiện so với VAR (%)"] = np.nan
         st.info("Huấn luyện **VAR** ở Trang 5 để có cột “Mức cải thiện so với VAR”.")
-    st.markdown(f"**Trung bình {len(provs)} tỉnh**")
+
+    # Sắp xếp theo RMSE từ thấp đến cao
+    tbl = tbl.sort_values("RMSE", ascending=True).reset_index(drop=True)
+    tbl.insert(0, "Xếp hạng", [f"Hạng {i+1}" if r["Mô hình"] != "Naive (tham chiếu)" else "Cơ sở" for i, r in tbl.iterrows()])
+
+    st.markdown(f"**Bảng Tổng hợp Hiệu suất Dự báo (Trung bình {len(provs)} tỉnh)**")
     
     fmt_dict = {
         "RMSE": "{:,.1f}", "MAE": "{:,.1f}", "MAPE (%)": "{:.2f}%",
@@ -81,15 +106,47 @@ with tab1:
         styled = styled.highlight_max(subset=max_cols, color="#d5f5e3")
         
     st.dataframe(styled, width="stretch", hide_index=True)
+
     if "DeepVARX" in res and "VAR" in res:
-        imp = float(tbl.loc[tbl["Mô hình"] == "DeepVARX", "Mức cải thiện so với VAR (%)"].iloc[0])
-        (st.success if imp > 0 else st.warning)(f"DeepVARX {'giảm' if imp > 0 else 'tăng'} **{abs(imp):.1f}%** RMSE trung bình so với VAR.")
-    fig = go.Figure()
-    fig.add_trace(go.Bar(x=names, y=[avg_metrics(m)["RMSE"] for m in names], name="RMSE"))
-    fig.add_trace(go.Bar(x=names, y=[avg_metrics(m)["MAE"] for m in names], name="MAE"))
-    fig.update_layout(barmode="group", height=340, margin=dict(t=40, b=10), yaxis_title="VNĐ/kg",
-                      title="Sai số trung bình các tỉnh — từ tuyến tính đến học sâu", legend=dict(orientation="h"))
-    st.plotly_chart(fig, width="stretch")
+        imp_row = tbl.loc[tbl["Mô hình"] == "DeepVARX"]
+        if not imp_row.empty:
+            imp = float(imp_row["Mức cải thiện so với VAR (%)"].iloc[0])
+            if imp > 0:
+                st.caption(f"Ghi nhận: DeepVARX giảm **{imp:.1f}%** sai số RMSE trung bình so với mô hình VAR.")
+
+    c_bar1, c_bar2 = st.columns(2)
+    with c_bar1:
+        fig1 = go.Figure()
+        fig1.add_trace(go.Bar(x=names, y=[avg_metrics(m)["RMSE"] for m in names], name="RMSE", marker_color="#1f77b4"))
+        fig1.add_trace(go.Bar(x=names, y=[avg_metrics(m)["MAE"] for m in names], name="MAE", marker_color="#ff7f0e"))
+        fig1.update_layout(
+            barmode="group",
+            height=370,
+            margin=dict(t=40, b=20),
+            yaxis_title="VNĐ/kg",
+            title="Sai số dự báo trung bình các tỉnh (RMSE & MAE)",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        )
+        st.plotly_chart(fig1, width="stretch")
+
+    with c_bar2:
+        da_vals = [avg_metrics(m).get("Đúng hướng (%)", np.nan) for m in names]
+        fig2 = go.Figure()
+        fig2.add_trace(go.Bar(x=names, y=da_vals, name="Đúng hướng (%)", marker_color="#2ca02c"))
+        fig2.add_hline(y=50, line_dash="dash", line_color="gray", annotation_text="Ngẫu nhiên (50%)")
+        fig2.update_layout(
+            height=370,
+            margin=dict(t=40, b=20),
+            yaxis_title="Tỷ lệ (%)",
+            title="Tỷ lệ dự báo đúng hướng giá (Directional Accuracy)",
+            yaxis=dict(range=[0, 100]),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        )
+        st.plotly_chart(fig2, width="stretch")
+
+    st.caption("Chú thích: Biểu đồ sai số thể hiện RMSE (xanh dương) và MAE (cam) theo đơn vị VNĐ/kg (thấp hơn là tốt hơn); "
+               "biểu đồ bên phải thể hiện tỷ lệ dự báo chuẩn xác chiều tăng hoặc giảm của giá so với phiên trước (ngưỡng 50% tương đương đoán ngẫu nhiên).")
+
     with st.expander("Chi tiết theo từng tỉnh"):
         piv = pd.concat({m: res[m]["by_prov"].set_index("province")["RMSE"] for m in names}, axis=1)
         piv["Naive"] = naive_by.set_index("province")["RMSE"]
@@ -112,7 +169,6 @@ with tab1:
             gain = (piv[names].rsub(piv["VAR"], axis=0)).div(piv["VAR"], axis=0) * 100
             st.markdown("**Mức cải thiện RMSE so với VAR (%)**")
             st.dataframe(gain.style.format("{:+.1f}%"), width="stretch")
-
 # =============================================================================== TAB 2
 with tab2:
     scope = st.selectbox("Phạm vi", ["Trung bình các tỉnh"] + provs)
@@ -224,8 +280,8 @@ with tab3:
         for e, g in mg.groupby("province"):
             q = dm_from_loss_diff(g["d"].to_numpy())
             prow.append({"Tỉnh": e, "DM": q["stat"], "p-value": q["p"],
-                         "Kết luận": f"{A} tốt hơn ✅" if q["p"] < 0.05 and q["mean_diff"] > 0
-                         else (f"{A} kém hơn ❌" if q["p"] < 0.05 else "Không khác biệt")})
+                         "Kết luận": f"{A} tốt hơn (p < 0.05)" if q["p"] < 0.05 and q["mean_diff"] > 0
+                         else (f"{A} kém hơn (p < 0.05)" if q["p"] < 0.05 else "Chưa đủ bằng chứng khác biệt (p ≥ 0.05)")})
         pdm = pd.DataFrame(prow)
         st.markdown(f"**Theo từng tỉnh** — {A} tốt hơn có ý nghĩa ở **{int(pdm['Kết luận'].str.contains('tốt hơn').sum())}/{len(pdm)}** tỉnh")
         st.dataframe(pdm.style.format({"DM": "{:.3f}", "p-value": "{:.4f}"}), width="stretch", hide_index=True)
@@ -292,3 +348,6 @@ with tab4:
         h3 = go.Figure(go.Heatmap(z=lag.T, x=[f"t-{lag.shape[0] - i}" for i in range(lag.shape[0])], y=cols_all, colorscale="YlOrBr"))
         h3.update_layout(height=max(260, 45 * len(cols_all)), margin=dict(t=30, b=10), title="Gate biến theo độ trễ (TB toàn TEST)")
         st.plotly_chart(h3, width="stretch")
+
+st.divider()
+st.page_link("pages/7_Kiem_dinh_Thong_ke_DM.py", label="Chuyển sang Trang 7 · Kiểm định Thống kê So sánh Mô hình (Diebold–Mariano)")
